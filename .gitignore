@@ -1,0 +1,34 @@
+# Node / yarn
+node_modules/
+.yarn/cache/
+.yarn/install-state.gz
+.yarn/build-state.yml
+.yarn/unplugged/
+.pnp.*
+
+# TS / build output
+lib/
+tsconfig.tsbuildinfo
+jupyter_chat/labextension/
+
+# Python build artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+
+# Chat session store (runtime user data)
+.jupyter-chat/
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Secrets — never commit
+.env
+.env.*
+!.env.example
