@@ -13,18 +13,22 @@ export function ChatPanel({ open, children }: Props) {
   const panelRef = React.useRef<HTMLDivElement>(null);
   const { geom, onHeaderMouseDown, onResizeMouseDown } = useDragResize(panelRef);
   const [mounted, setMounted] = React.useState(false);
-  const [animOpen, setAnimOpen] = React.useState(false);
+  const [closing, setClosing] = React.useState(false);
 
   React.useEffect(() => {
     if (open) {
       setMounted(true);
-      const r = requestAnimationFrame(() => setAnimOpen(true));
-      return () => cancelAnimationFrame(r);
+      setClosing(false);
+      return;
     }
-    setAnimOpen(false);
-    const t = setTimeout(() => setMounted(false), 260);
+    if (!mounted) return;
+    setClosing(true);
+    const t = setTimeout(() => {
+      setMounted(false);
+      setClosing(false);
+    }, 260);
     return () => clearTimeout(t);
-  }, [open]);
+  }, [open, mounted]);
 
   if (!mounted) return null;
 
@@ -34,10 +38,8 @@ export function ChatPanel({ open, children }: Props) {
       className={cn(
         'fixed z-[9999] flex flex-col overflow-hidden',
         'rounded-lg border border-line bg-paper shadow-panel',
-        'origin-bottom-right transition-[transform,opacity,filter] duration-[240ms] ease-out',
-        open && animOpen
-          ? 'opacity-100 scale-100 blur-0'
-          : 'opacity-0 scale-[.05] blur-sm pointer-events-none'
+        'origin-bottom-right',
+        closing ? 'animate-pop-out' : 'animate-pop-in'
       )}
       style={{
         left: geom.left,

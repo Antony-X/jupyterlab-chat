@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { MessageSquare } from 'lucide-react';
+import { MessageSquare, X } from 'lucide-react';
 import { cn } from '../../lib/utils';
 
 interface Props {
@@ -13,19 +13,38 @@ export function ChatFAB({ open, hasNotification, onClick }: Props) {
     <button
       type="button"
       onClick={onClick}
-      title="Chat with LLM (Ctrl+Shift+L)"
+      title={open ? 'Close chat' : 'Chat with LLM (Ctrl+Shift+L)'}
+      aria-label={open ? 'Close chat' : 'Open chat'}
       className={cn(
         'fixed bottom-5 right-5 z-[9998] h-12 w-12 rounded-full',
         'bg-header-bg text-header-fg',
-        'shadow-fab transition-all duration-200 ease-out',
-        'flex items-center justify-center',
-        'hover:bg-brand hover:scale-110',
+        'shadow-fab transition-[transform,background-color] duration-200 ease-out',
+        'relative flex items-center justify-center',
+        'hover:scale-105 hover:bg-ink-soft',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2',
-        open && 'scale-95 bg-brand',
         hasNotification && !open && 'animate-jc-pulse'
       )}
     >
-      <MessageSquare size={20} strokeWidth={2} />
+      <span
+        className={cn(
+          'absolute inset-0 flex items-center justify-center',
+          'transition-[transform,opacity] duration-200 ease-out',
+          open ? 'opacity-0 scale-75 rotate-45' : 'opacity-100 scale-100 rotate-0'
+        )}
+        aria-hidden
+      >
+        <MessageSquare size={20} strokeWidth={2} />
+      </span>
+      <span
+        className={cn(
+          'absolute inset-0 flex items-center justify-center',
+          'transition-[transform,opacity] duration-200 ease-out',
+          open ? 'opacity-100 scale-100 rotate-0' : 'opacity-0 scale-75 -rotate-45'
+        )}
+        aria-hidden
+      >
+        <X size={22} strokeWidth={2.2} />
+      </span>
     </button>
   );
 }

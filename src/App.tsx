@@ -5,6 +5,7 @@ import { ensureKatexCss } from './lib/markdown';
 import { useChat } from './hooks/useChat';
 import { useTheme } from './hooks/useTheme';
 import { useKernelErrors } from './hooks/useKernelErrors';
+import { useHasNotebook } from './hooks/useHasNotebook';
 import { ChatFAB } from './components/chat/ChatFAB';
 import { ChatPanel } from './components/chat/ChatPanel';
 import { ChatHeader } from './components/chat/ChatHeader';
@@ -23,6 +24,7 @@ export interface AppProps {
 
 export function App({ settings, tracker, openSignal }: AppProps) {
   const { theme, toggle: toggleTheme } = useTheme();
+  const hasNotebook = useHasNotebook(tracker);
   const [open, setOpen] = React.useState(false);
   const [menuOpen, setMenuOpen] = React.useState(false);
   const [sessionsOpen, setSessionsOpen] = React.useState(false);
@@ -30,6 +32,15 @@ export function App({ settings, tracker, openSignal }: AppProps) {
   const firstOpenRef = React.useRef(true);
 
   const chat = useChat({ settings, tracker, initialModel: DEFAULT_MODEL });
+
+  // Close the panel whenever all notebooks are closed.
+  React.useEffect(() => {
+    if (!hasNotebook) {
+      setOpen(false);
+      setMenuOpen(false);
+      setSessionsOpen(false);
+    }
+  }, [hasNotebook]);
 
   // Load KaTeX CSS once.
   React.useEffect(() => {
@@ -110,6 +121,8 @@ export function App({ settings, tracker, openSignal }: AppProps) {
   const handleSend = (text: string) => {
     chat.sendMessage(text, chat.attachments);
   };
+
+  if (!hasNotebook) return null;
 
   return (
     <div className={cn('jchat-root', theme === 'dark' && 'dark')}>
