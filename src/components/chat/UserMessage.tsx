@@ -1,0 +1,108 @@
+import * as React from 'react';
+import { Pencil, X, Check } from 'lucide-react';
+import { Button } from '../ui/button';
+import { Textarea } from '../ui/textarea';
+import { cn } from '../../lib/utils';
+
+interface Props {
+  displayText: string;
+  serverIdx?: number;
+  onEdit?: (idx: number, newText: string) => void;
+  onDelete?: (idx: number) => void;
+}
+
+export function UserMessage({ displayText, serverIdx, onEdit, onDelete }: Props) {
+  const [editing, setEditing] = React.useState(false);
+  const [draft, setDraft] = React.useState(displayText);
+  const taRef = React.useRef<HTMLTextAreaElement>(null);
+  const canEdit = serverIdx !== undefined && onEdit && onDelete;
+
+  React.useEffect(() => {
+    if (editing && taRef.current) {
+      const ta = taRef.current;
+      ta.focus();
+      ta.setSelectionRange(ta.value.length, ta.value.length);
+    }
+  }, [editing]);
+
+  const startEdit = () => {
+    setDraft(displayText);
+    setEditing(true);
+  };
+  const cancel = () => setEditing(false);
+  const save = () => {
+    const v = draft.trim();
+    if (!v || serverIdx === undefined) return;
+    setEditing(false);
+    onEdit?.(serverIdx, v);
+  };
+  const handleDelete = () => {
+    if (serverIdx === undefined) return;
+    if (!window.confirm('Delete this message and everything after it?')) return;
+    onDelete?.(serverIdx);
+  };
+
+  if (editing) {
+    return (
+      <div className="self-end max-w-[90%] my-2 w-full animate-fade-in">
+        <div className="bg-brand-soft/60 border border-brand/30 rounded-lg p-2 shadow-sm">
+          <Textarea
+            ref={taRef}
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={Math.min(8, Math.max(2, draft.split('\n').length))}
+            className="bg-input-bg-2 border-brand/30 text-sm"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) save();
+              if (e.key === 'Escape') cancel();
+            }}
+          />
+          <div className="flex justify-end gap-1.5 mt-1.5">
+            <Button variant="ghost" size="xs" onClick={cancel}>
+              Cancel
+            </Button>
+            <Button variant="default" size="xs" onClick={save}>
+              <Check size={12} /> Save & resend
+            </Button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="self-end max-w-[90%] my-2 animate-fade-in group relative">
+      <div
+        className={cn(
+          'bg-brand text-white rounded-lg rounded-br-sm px-3.5 py-2.5',
+          'shadow-[0_1px_2px_rgba(0,0,0,.08)] whitespace-pre-wrap break-words',
+          'text-sm-plus leading-relaxed font-sans'
+        )}
+      >
+        {displayText}
+      </div>
+      {canEdit && (
+        <div className="flex justify-end gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={startEdit}
+            title="Edit & resend"
+            className="text-muted hover:text-ink"
+          >
+            <Pencil size={12} />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            onClick={handleDelete}
+            title="Delete from here"
+            className="text-muted hover:text-danger"
+          >
+            <X size={12} />
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}

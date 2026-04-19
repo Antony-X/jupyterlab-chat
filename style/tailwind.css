@@ -1,0 +1,163 @@
+@import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600;9..144,700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ═══════════════════════════════════════════════════════════
+   Scoped theme variables — only inside the chat panel root
+   ═══════════════════════════════════════════════════════════ */
+.jchat-root {
+  --jc-ink: #1f1b16;
+  --jc-ink-soft: #433c33;
+  --jc-muted: #8a7f72;
+  --jc-line: #e9e0d1;
+  --jc-paper: #fbf7ef;
+  --jc-paper-2: #f3ead8;
+  --jc-brand: #f37726;
+  --jc-brand-ink: #c2580f;
+  --jc-brand-soft: #fde7d1;
+  --jc-accent: #4a7c74;
+  --jc-danger: #b8341b;
+  --jc-success: #5d8a3a;
+  --jc-code-bg: #211d18;
+  --jc-code-fg: #e8dfd1;
+  --jc-dot: rgba(31, 27, 22, 0.035);
+  --jc-header-bg: #1f1b16;
+  --jc-header-fg: #fbf7ef;
+  --jc-input-bg: #fbf7ef;
+  --jc-input-bg-2: #ffffff;
+  --jc-scroll: #e9e0d1;
+  font-family: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+.jchat-root.dark {
+  --jc-ink: #f2ebd9;
+  --jc-ink-soft: #d3cab5;
+  --jc-muted: #8a8374;
+  --jc-line: #33302a;
+  --jc-paper: #1a1713;
+  --jc-paper-2: #22201b;
+  --jc-brand: #ff8a3d;
+  --jc-brand-ink: #ffb077;
+  --jc-brand-soft: #3a2618;
+  --jc-accent: #7ab8ae;
+  --jc-danger: #e67060;
+  --jc-success: #8bb467;
+  --jc-code-bg: #100e0b;
+  --jc-code-fg: #e8dfd1;
+  --jc-dot: rgba(255, 240, 210, 0.04);
+  --jc-header-bg: #0e0c0a;
+  --jc-header-fg: #f2ebd9;
+  --jc-input-bg: #22201b;
+  --jc-input-bg-2: #2a2721;
+  --jc-scroll: #33302a;
+}
+
+/* Custom scrollbar only inside the panel */
+.jchat-root .jc-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: var(--jc-scroll) transparent;
+}
+.jchat-root .jc-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.jchat-root .jc-scroll::-webkit-scrollbar-thumb {
+  background: var(--jc-scroll);
+  border-radius: 4px;
+}
+.jchat-root .jc-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--jc-muted);
+}
+.jchat-root .jc-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+/* Dot-grid background for the panel body */
+.jchat-root .jc-dotgrid {
+  background-image: radial-gradient(circle at 1px 1px, var(--jc-dot) 1px, transparent 0);
+  background-size: 14px 14px;
+}
+
+/* KaTeX inherits panel colors when rendered inside assistant messages */
+.jchat-root .katex {
+  color: inherit;
+  font-size: 1.02em;
+}
+.jchat-root .katex-display {
+  margin: 10px 0;
+  padding: 2px 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+.jchat-root .katex-display > .katex {
+  display: inline-block;
+  white-space: nowrap;
+}
+
+/* Cell-action code block badges injected by MarkdownView */
+.jchat-root .jc-action-pre {
+  position: relative;
+  border-left: 2px solid var(--jc-success);
+}
+.jchat-root .jc-action-pre.jc-action-del {
+  border-left-color: var(--jc-danger);
+}
+.jchat-root .jc-action-badge {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  background: var(--jc-success);
+  color: #fff;
+  border-radius: 3px;
+  padding: 2px 7px;
+  font-family: 'IBM Plex Sans', sans-serif;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  pointer-events: none;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+.jchat-root .jc-action-pre.jc-action-del .jc-action-badge {
+  background: var(--jc-danger);
+}
+
+/* Header bottom accent line (Jupyter orange gradient) */
+.jchat-root .jc-header-accent::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--jc-brand) 0 46%, transparent 46%);
+}
+
+/* Input area top accent */
+.jchat-root .jc-input-accent::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 16px;
+  right: 16px;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--jc-brand) 50%, transparent);
+  opacity: 0.5;
+}
+
+/* Resize handle pattern */
+.jchat-root .jc-resize-handle {
+  background: linear-gradient(
+    135deg,
+    transparent 46%,
+    var(--jc-muted) 46%,
+    var(--jc-muted) 52%,
+    transparent 52%,
+    transparent 68%,
+    var(--jc-muted) 68%,
+    var(--jc-muted) 74%,
+    transparent 74%
+  );
+}
