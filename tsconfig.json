@@ -5,6 +5,7 @@
     "declaration": true,
     "esModuleInterop": true,
     "incremental": true,
+    "jsx": "react-jsx",
     "module": "esnext",
     "moduleResolution": "node",
     "noEmitOnError": true,
@@ -17,7 +18,12 @@
     "sourceMap": true,
     "skipLibCheck": true,
     "strict": false,
-    "target": "ES2018"
+    "target": "ES2018",
+    "lib": ["ES2018", "DOM", "DOM.Iterable"],
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["src/*"]
+    }
   },
-  "include": ["src/*"]
+  "include": ["src/**/*"]
 }
