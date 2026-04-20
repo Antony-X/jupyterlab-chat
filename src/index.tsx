@@ -40,11 +40,13 @@ const plugin: JupyterFrontEndPlugin<void> = {
 
     const root = ReactDOM.createRoot(host);
     root.render(
-      <App
-        settings={settings}
-        tracker={tracker}
-        openSignal={{ listen: toggleSignal.listen }}
-      />
+      <React.StrictMode>
+        <App
+          settings={settings}
+          tracker={tracker}
+          openSignal={{ listen: toggleSignal.listen }}
+        />
+      </React.StrictMode>
     );
 
     // Command + keyboard shortcut.
