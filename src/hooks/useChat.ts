@@ -40,6 +40,7 @@ export function useChat(opts: UseChatOpts) {
   const [sessions, setSessions] = useState<api.SessionSummary[]>([]);
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState(opts.initialModel);
+  const [webSearch, setWebSearch] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [sending, setSending] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
@@ -234,7 +235,8 @@ export function useChat(opts: UseChatOpts) {
                 m.id === assistantId ? { ...m, content: full, pending: true } : m
               )
             );
-          }
+          },
+          webSearch
         );
         setMessages(prev =>
           prev.map(m =>
@@ -352,7 +354,7 @@ export function useChat(opts: UseChatOpts) {
         }
       }
     },
-    [sending, tracker, selectedModel, settings, addStatus, refreshFromServer, autosave]
+    [sending, tracker, selectedModel, webSearch, settings, addStatus, refreshFromServer, autosave]
   );
 
   const editAndRegen = useCallback(
@@ -385,6 +387,8 @@ export function useChat(opts: UseChatOpts) {
     currentSessionId,
     selectedModel,
     setSelectedModel,
+    webSearch,
+    setWebSearch,
     attachments,
     setAttachments,
     sending,

@@ -138,6 +138,8 @@ export function App({ settings, tracker, openSignal }: AppProps) {
               theme={theme}
               selectedModel={chat.selectedModel}
               onModelChange={chat.setSelectedModel}
+              webSearch={chat.webSearch}
+              onToggleWebSearch={() => chat.setWebSearch(v => !v)}
               onToggleTheme={toggleTheme}
               onNew={handleNew}
               onToggleSessions={async () => {

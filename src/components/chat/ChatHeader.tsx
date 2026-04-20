@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Plus, History, Moon, Sun, MoreVertical, X } from 'lucide-react';
+import { Plus, History, Moon, Sun, MoreVertical, X, Globe } from 'lucide-react';
 import { NativeSelect } from '../ui/select';
 import { Button } from '../ui/button';
 import { MODELS } from '../../constants';
@@ -9,6 +9,8 @@ interface Props {
   theme: 'light' | 'dark';
   selectedModel: string;
   onModelChange: (id: string) => void;
+  webSearch: boolean;
+  onToggleWebSearch: () => void;
   onToggleTheme: () => void;
   onNew: () => void;
   onToggleSessions: () => void;
@@ -21,6 +23,8 @@ export function ChatHeader({
   theme,
   selectedModel,
   onModelChange,
+  webSearch,
+  onToggleWebSearch,
   onToggleTheme,
   onNew,
   onToggleSessions,
@@ -51,6 +55,15 @@ export function ChatHeader({
       <div className="font-serif font-semibold tracking-tight text-sm ml-1 flex-1 truncate">
         Chat
       </div>
+      <Button
+        variant="header-icon"
+        size="icon"
+        onClick={onToggleWebSearch}
+        title={webSearch ? 'Web search: on' : 'Web search: off'}
+        className={cn(webSearch && 'text-brand bg-white/10')}
+      >
+        <Globe size={14} />
+      </Button>
       <Button variant="header-icon" size="icon" onClick={onNew} title="New chat">
         <Plus size={14} />
       </Button>

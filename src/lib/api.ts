@@ -18,12 +18,16 @@ export async function chatSync(
   content: any,
   ctx: string,
   model: string,
-  s: ServerConnection.ISettings
+  s: ServerConnection.ISettings,
+  webSearch = false
 ): Promise<string> {
   const url = URLExt.join(s.baseUrl, 'api/chat/message');
   const r = await ServerConnection.makeRequest(
     url,
-    { method: 'POST', body: JSON.stringify({ content, context: ctx, model }) },
+    {
+      method: 'POST',
+      body: JSON.stringify({ content, context: ctx, model, web_search: webSearch }),
+    },
     s
   );
   const d = await r.json();
@@ -37,7 +41,8 @@ export async function chatStream(
   model: string,
   s: ServerConnection.ISettings,
   signal: AbortSignal,
-  onToken: (full: string) => void
+  onToken: (full: string) => void,
+  webSearch = false
 ): Promise<string> {
   const url = URLExt.join(s.baseUrl, 'api/chat/stream');
   const hdrs: Record<string, string> = {
@@ -50,7 +55,7 @@ export async function chatStream(
     method: 'POST',
     headers: hdrs,
     credentials: 'same-origin',
-    body: JSON.stringify({ content, context: ctx, model }),
+    body: JSON.stringify({ content, context: ctx, model, web_search: webSearch }),
     signal,
   });
   if (!resp.ok) {

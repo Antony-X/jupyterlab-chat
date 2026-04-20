@@ -182,6 +182,15 @@ class ChatState:
 # ── Non-streaming (used by auto-fix) ─────────────────────
 
 
+def _apply_web_search(model: str, web_search: bool) -> str:
+    """OpenRouter enables its built-in web plugin when a model slug ends in
+    ':online'. We append it only when the toggle is on and it isn't already
+    part of the slug."""
+    if web_search and not model.endswith(":online"):
+        return f"{model}:online"
+    return model
+
+
 class ChatHandler(APIHandler):
     @tornado.web.authenticated
     async def post(self):
@@ -189,6 +198,8 @@ class ChatHandler(APIHandler):
         content = body.get("content", body.get("message", ""))
         ctx = body.get("context", "")
         model = body.get("model", "anthropic/claude-sonnet-4.6")
+        web_search = bool(body.get("web_search", False))
+        model = _apply_web_search(model, web_search)
 
         ChatState.history.append({"role": "user", "content": content})
         key = ChatState.api_key()
@@ -232,6 +243,8 @@ class ChatStreamHandler(APIHandler):
         content = body.get("content", body.get("message", ""))
         ctx = body.get("context", "")
         model = body.get("model", "anthropic/claude-sonnet-4.6")
+        web_search = bool(body.get("web_search", False))
+        model = _apply_web_search(model, web_search)
 
         ChatState.history.append({"role": "user", "content": content})
         key = ChatState.api_key()
