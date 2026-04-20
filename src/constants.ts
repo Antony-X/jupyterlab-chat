@@ -1,4 +1,5 @@
 export const MODELS = [
+  { id: 'anthropic/claude-opus-4.7', label: 'Claude Opus 4.7' },
   { id: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6' },
   { id: 'anthropic/claude-haiku-4.5-20251001', label: 'Claude Haiku 4.5' },
   { id: 'openai/gpt-4o', label: 'GPT-4o' },
@@ -8,4 +9,4 @@ export const MODELS = [
   { id: 'deepseek/deepseek-chat', label: 'DeepSeek V3' },
 ];
 
-export const DEFAULT_MODEL = MODELS[0].id;
+export const DEFAULT_MODEL = MODELS[1].id;
