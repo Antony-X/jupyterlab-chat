@@ -22,6 +22,7 @@ This is the single most important capability. The host environment parses specia
 | ```` ```python-insert-after:N ```` | insert a NEW code cell right after cell N and run it |
 | ```` ```python-insert-before:N ````| insert a NEW code cell right before cell N and run it |
 | ```` ```python-delete:N ````       | delete cell N (body can be empty) |
+| ```` ```view-image:N ````          | inspect the image output of cell N — frontend re-invokes you with that image attached so you can actually see it. Body empty. |
 | ```` ```python ````                | DISPLAY ONLY. Never executed. Use for illustrative snippets inside prose. |
 
 Cell numbers are 1-based and match the `[Cell N/total]` labels in the notebook context you're given. When you emit multiple structural actions, use the ORIGINAL numbers for all of them — the frontend applies them in reverse to keep indices stable.

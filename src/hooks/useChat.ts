@@ -8,6 +8,7 @@ import {
   autoFix,
   executeAction,
   findLastError,
+  getCellImageData,
   getContext,
   makeContent,
   userText,
@@ -192,11 +193,12 @@ export function useChat(opts: UseChatOpts) {
 
   /**
    * Core send flow — streams an assistant reply, then executes cell actions if any.
-   * `textOverride` / `attachmentsOverride` are used for "edit & regen" where the
-   * UI path has already been taken.
+   * `depth` tracks auto-chained follow-up turns (currently: `view-image` requests
+   * trigger ONE follow-up with the images attached). Capped so the LLM can't
+   * loop on itself by re-emitting view-image in the follow-up response.
    */
   const sendMessage = useCallback(
-    async (rawText: string, rawAttachments: Attachment[]) => {
+    async (rawText: string, rawAttachments: Attachment[], depth = 0) => {
       const text = rawText.trim();
       if ((!text && !rawAttachments.length) || sending) return;
       setSending(true);
@@ -270,16 +272,24 @@ export function useChat(opts: UseChatOpts) {
         }
       }
 
+      let viewImageRequests: Array<{ index?: number }> = [];
+      let lastRunZeroIdx: number | undefined;
+
       if (!aborted && tracker && fullText) {
         const actions = extractCellActions(fullText);
         if (actions.length) {
           addStatus(`running ${actions.length} action${actions.length > 1 ? 's' : ''}…`);
           autoFixRunning.current = true;
           try {
-            const hasStructural = actions.some(
+            const mutating = actions.filter(a => a.kind !== 'view-image');
+            viewImageRequests = actions
+              .filter(a => a.kind === 'view-image')
+              .map(a => ({ index: a.index }));
+
+            const hasStructural = mutating.some(
               a => a.kind === 'delete' || a.kind === 'insert-before' || a.kind === 'insert-after'
             );
-            const ordered = hasStructural ? [...actions].reverse() : actions;
+            const ordered = hasStructural ? [...mutating].reverse() : mutating;
             for (const a of ordered) {
               if (a.kind === 'run') {
                 await autoFix(
@@ -292,11 +302,15 @@ export function useChat(opts: UseChatOpts) {
                     autoFixRunning.current = v;
                   }
                 );
+                lastRunZeroIdx = tracker.currentWidget?.content.model
+                  ? tracker.currentWidget.content.model.cells.length - 1
+                  : undefined;
               } else {
                 const r = await executeAction(tracker, a);
                 addStatus(
                   r.error ? `⚠ ${r.label}: ${r.error.split('\n')[0]}` : r.label
                 );
+                if (r.cellIdx >= 0) lastRunZeroIdx = r.cellIdx;
               }
             }
           } finally {
@@ -310,6 +324,33 @@ export function useChat(opts: UseChatOpts) {
       abortRef.current = null;
       await refreshFromServer();
       autosave();
+
+      // Follow-up turn for view-image requests. Cap at one level so the LLM
+      // can't trigger an endless see-and-ask chain.
+      if (viewImageRequests.length && tracker && depth < 1) {
+        const atts: Attachment[] = [];
+        const seenCells: number[] = [];
+        for (const req of viewImageRequests) {
+          const img = getCellImageData(tracker, req.index, lastRunZeroIdx);
+          if (!img) continue;
+          atts.push({
+            name: `cell-${img.cellIdx + 1}.${img.mime.split('/')[1] || 'png'}`,
+            mime: img.mime,
+            data: img.dataUri,
+          });
+          seenCells.push(img.cellIdx + 1);
+        }
+        if (atts.length) {
+          addStatus(`viewing image${atts.length > 1 ? 's' : ''} from cell ${seenCells.join(', ')}…`);
+          await sendMessage(
+            `(auto) Here ${atts.length > 1 ? 'are' : 'is'} the image output${atts.length > 1 ? 's' : ''} you requested from cell ${seenCells.join(', ')}. Continue.`,
+            atts,
+            depth + 1
+          );
+        } else {
+          addStatus('⚠ view-image: no image output found');
+        }
+      }
     },
     [sending, tracker, selectedModel, settings, addStatus, refreshFromServer, autosave]
   );

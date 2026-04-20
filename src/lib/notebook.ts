@@ -65,6 +65,52 @@ export function getContext(tracker: INotebookTracker | null): string {
   return parts.join('\n');
 }
 
+/**
+ * Pull the first image output from a notebook cell, returned as a data URI.
+ * `oneBasedIdx` matches the numbering used in assistant fenced blocks
+ * (`view-image:3` = third cell). Passing `undefined` uses the cell that
+ * most recently ran via chat actions — callers wire that in.
+ */
+export function getCellImageData(
+  tracker: INotebookTracker | null,
+  oneBasedIdx: number | undefined,
+  fallbackZeroIdx?: number
+): { dataUri: string; mime: string; cellIdx: number } | null {
+  if (!tracker) return null;
+  const w = tracker.currentWidget;
+  if (!w || !w.content.model) return null;
+  const nb = w.content.model.toJSON() as any;
+  const cells: any[] = nb.cells || [];
+
+  let zeroIdx: number;
+  if (oneBasedIdx !== undefined) {
+    zeroIdx = Math.max(0, Math.min(cells.length - 1, oneBasedIdx - 1));
+  } else if (fallbackZeroIdx !== undefined) {
+    zeroIdx = fallbackZeroIdx;
+  } else {
+    return null;
+  }
+
+  const cell = cells[zeroIdx];
+  if (!cell || cell.cell_type !== 'code') return null;
+
+  for (const o of cell.outputs || []) {
+    const data = o.data;
+    if (!data) continue;
+    for (const mime of ['image/png', 'image/jpeg', 'image/gif', 'image/webp']) {
+      let payload = data[mime];
+      if (!payload) continue;
+      if (Array.isArray(payload)) payload = payload.join('');
+      // notebook outputs store base64 without the data-uri prefix
+      const dataUri = payload.startsWith('data:')
+        ? payload
+        : `data:${mime};base64,${payload}`;
+      return { dataUri, mime, cellIdx: zeroIdx };
+    }
+  }
+  return null;
+}
+
 export function findLastError(
   tracker: INotebookTracker | null
 ): { code: string; error: string; idx: number } | null {

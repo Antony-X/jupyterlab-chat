@@ -1,4 +1,10 @@
-export type CellActionKind = 'run' | 'edit' | 'insert-after' | 'insert-before' | 'delete';
+export type CellActionKind =
+  | 'run'
+  | 'edit'
+  | 'insert-after'
+  | 'insert-before'
+  | 'delete'
+  | 'view-image';
 
 export interface CellAction {
   kind: CellActionKind;
@@ -12,8 +18,12 @@ export function tagToAction(tag: string): CellActionKind | null {
   if (tag === 'python-insert-after' || tag === 'py-insert-after' || tag === 'insert-after') return 'insert-after';
   if (tag === 'python-insert-before' || tag === 'py-insert-before' || tag === 'insert-before') return 'insert-before';
   if (tag === 'python-delete' || tag === 'py-delete' || tag === 'delete-cell') return 'delete';
+  if (tag === 'view-image' || tag === 'see-image' || tag === 'look-image' || tag === 'view') return 'view-image';
   return null;
 }
+
+// kinds whose fenced body is allowed to be empty
+const NO_BODY = new Set<CellActionKind>(['delete', 'view-image']);
 
 export function extractCellActions(text: string): CellAction[] {
   const out: CellAction[] = [];
@@ -26,8 +36,8 @@ export function extractCellActions(text: string): CellAction[] {
     const action = tagToAction(tag);
     if (!action) continue;
     if ((action === 'edit' || action === 'insert-after' || action === 'insert-before' || action === 'delete') && idx === undefined) continue;
-    const trimmed = action === 'delete' ? '' : code.trim();
-    if (action !== 'delete' && !trimmed) continue;
+    const trimmed = NO_BODY.has(action) ? '' : code.trim();
+    if (!NO_BODY.has(action) && !trimmed) continue;
     out.push({ kind: action, index: idx, code: trimmed });
   }
   return out;
@@ -43,5 +53,6 @@ export function actionLabel(action: CellAction): string {
   if (action.kind === 'insert-after') return action.index ? `↳ after cell ${action.index}` : '↳ inserted';
   if (action.kind === 'insert-before') return action.index ? `↱ before cell ${action.index}` : '↱ inserted';
   if (action.kind === 'delete') return action.index ? `✕ delete cell ${action.index}` : '✕ delete';
+  if (action.kind === 'view-image') return action.index ? `🖼 view cell ${action.index}` : '🖼 view';
   return '';
 }
