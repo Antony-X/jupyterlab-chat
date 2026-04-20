@@ -7,7 +7,7 @@ node_modules/
 .pnp.*
 
 # TS / build output
-lib/
+/lib/
 tsconfig.tsbuildinfo
 jupyter_chat/labextension/
 
