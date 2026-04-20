@@ -61,6 +61,7 @@ export function MessagesList({ messages, empty, onEdit, onDelete }: Props) {
             <UserMessage
               key={m.id}
               displayText={m.originalText ?? userText(m.content)}
+              content={m.content}
               serverIdx={m.serverIdx}
               onEdit={onEdit}
               onDelete={onDelete}

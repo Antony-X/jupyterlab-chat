@@ -6,16 +6,31 @@ import { cn } from '../../lib/utils';
 
 interface Props {
   displayText: string;
+  content?: any;
   serverIdx?: number;
   onEdit?: (idx: number, newText: string) => void;
   onDelete?: (idx: number) => void;
 }
 
-export function UserMessage({ displayText, serverIdx, onEdit, onDelete }: Props) {
+/** Pull image URLs / data URIs out of a multimodal user-content array. */
+function extractImages(content: any): string[] {
+  if (!Array.isArray(content)) return [];
+  const out: string[] = [];
+  for (const part of content) {
+    if (part?.type === 'image_url' && part.image_url?.url) {
+      out.push(part.image_url.url);
+    }
+  }
+  return out;
+}
+
+export function UserMessage({ displayText, content, serverIdx, onEdit, onDelete }: Props) {
   const [editing, setEditing] = React.useState(false);
   const [draft, setDraft] = React.useState(displayText);
+  const [lightbox, setLightbox] = React.useState<string | null>(null);
   const taRef = React.useRef<HTMLTextAreaElement>(null);
   const canEdit = serverIdx !== undefined && onEdit && onDelete;
+  const images = React.useMemo(() => extractImages(content), [content]);
 
   React.useEffect(() => {
     if (editing && taRef.current) {
@@ -72,15 +87,51 @@ export function UserMessage({ displayText, serverIdx, onEdit, onDelete }: Props)
 
   return (
     <div className="self-end max-w-[90%] my-2 animate-fade-in group relative">
-      <div
-        className={cn(
-          'bg-brand text-white rounded-lg rounded-br-sm px-3.5 py-2.5',
-          'shadow-[0_1px_2px_rgba(0,0,0,.08)] whitespace-pre-wrap break-words',
-          'text-sm-plus leading-relaxed font-sans'
-        )}
-      >
-        {displayText}
-      </div>
+      {images.length > 0 && (
+        <div className="flex flex-wrap justify-end gap-1.5 mb-1.5">
+          {images.map((src, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={() => setLightbox(src)}
+              className={cn(
+                'rounded-md overflow-hidden border border-line bg-paper-2',
+                'hover:ring-2 hover:ring-brand/50 transition-shadow'
+              )}
+              title="Click to expand"
+            >
+              <img
+                src={src}
+                alt={`attachment ${i + 1}`}
+                className="block max-h-40 max-w-[200px] object-cover"
+              />
+            </button>
+          ))}
+        </div>
+      )}
+      {displayText && (
+        <div
+          className={cn(
+            'bg-brand text-white rounded-lg rounded-br-sm px-3.5 py-2.5',
+            'shadow-[0_1px_2px_rgba(0,0,0,.08)] whitespace-pre-wrap break-words',
+            'text-sm-plus leading-relaxed font-sans'
+          )}
+        >
+          {displayText}
+        </div>
+      )}
+      {lightbox && (
+        <div
+          className="fixed inset-0 z-[10000] bg-black/70 flex items-center justify-center p-6 cursor-zoom-out animate-fade-in"
+          onClick={() => setLightbox(null)}
+        >
+          <img
+            src={lightbox}
+            alt="expanded"
+            className="max-h-[90vh] max-w-[90vw] object-contain rounded shadow-panel"
+          />
+        </div>
+      )}
       {canEdit && (
         <div className="flex justify-end gap-1 mt-1 opacity-0 group-hover:opacity-100 transition-opacity">
           <Button
