@@ -19,22 +19,26 @@ export function ChatPanel({ open, children }: Props) {
     if (open) {
       setMounted(true);
       setClosing(false);
-      return;
+    } else if (mounted) {
+      setClosing(true);
     }
-    if (!mounted) return;
-    setClosing(true);
-    const t = setTimeout(() => {
+  }, [open, mounted]);
+
+  // Unmount when the pop-out keyframe animation finishes — the CSS duration
+  // is the single source of truth, no JS timer to drift out of sync with it.
+  const handleAnimationEnd = (e: React.AnimationEvent<HTMLDivElement>) => {
+    if (e.animationName === 'pop-out') {
       setMounted(false);
       setClosing(false);
-    }, 260);
-    return () => clearTimeout(t);
-  }, [open, mounted]);
+    }
+  };
 
   if (!mounted) return null;
 
   return (
     <div
       ref={panelRef}
+      onAnimationEnd={handleAnimationEnd}
       className={cn(
         'fixed z-[9999] flex flex-col overflow-hidden',
         'rounded-lg border border-line bg-paper shadow-panel',
