@@ -7,6 +7,11 @@ import type { Attachment } from '../../lib/notebook';
 import { readFile } from '../../lib/notebook';
 import { cn } from '../../lib/utils';
 
+// Chars above which a pasted text blob becomes a .txt attachment instead of
+// being dumped inline into the textarea. Tuned so normal paragraph pastes
+// stay inline but stack traces / file dumps get stashed as attachments.
+const LARGE_TEXT_PASTE_THRESHOLD = 3000;
+
 interface Props {
   sending: boolean;
   attachments: Attachment[];
@@ -47,6 +52,32 @@ export function ChatInput({
     if (atts.length) onAttach(atts);
   };
 
+  const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+    const cd = e.clipboardData;
+    if (!cd) return;
+
+    const imageFiles: File[] = [];
+    for (const it of Array.from(cd.items)) {
+      if (it.kind === 'file' && it.type.startsWith('image/')) {
+        const f = it.getAsFile();
+        if (f) imageFiles.push(f);
+      }
+    }
+    if (imageFiles.length) {
+      e.preventDefault();
+      const atts = await Promise.all(imageFiles.map(readFile));
+      onAttach(atts);
+      return;
+    }
+
+    const pastedText = cd.getData('text');
+    if (pastedText.length >= LARGE_TEXT_PASTE_THRESHOLD) {
+      e.preventDefault();
+      const name = `pasted-${new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)}.txt`;
+      onAttach([{ name, mime: 'text/plain', data: pastedText }]);
+    }
+  };
+
   React.useEffect(() => {
     // autofocus on mount
     taRef.current?.focus();
@@ -75,6 +106,7 @@ export function ChatInput({
           ref={taRef}
           value={text}
           onChange={(e) => setText(e.target.value)}
+          onPaste={handlePaste}
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
