@@ -33,15 +33,6 @@ export function App({ settings, tracker, openSignal }: AppProps) {
 
   const chat = useChat({ settings, tracker, initialModel: DEFAULT_MODEL });
 
-  // Close the panel whenever all notebooks are closed.
-  React.useEffect(() => {
-    if (!hasNotebook) {
-      setOpen(false);
-      setMenuOpen(false);
-      setSessionsOpen(false);
-    }
-  }, [hasNotebook]);
-
   // Load KaTeX CSS once.
   React.useEffect(() => {
     ensureKatexCss();
@@ -122,15 +113,20 @@ export function App({ settings, tracker, openSignal }: AppProps) {
     chat.sendMessage(text, chat.attachments);
   };
 
-  if (!hasNotebook) return null;
-
+  // Never unmount the root on notebook-tracker flickers — `tracker.size` can
+  // briefly transition through false during cell execution / focus changes,
+  // and unmounting here would wipe all chat state (messages, open, session).
+  // We just hide the FAB so the user can't reopen chat when no notebook is
+  // open; the panel itself stays in the tree if it's already open.
   return (
     <div className={cn('jchat-root', theme === 'dark' && 'dark')}>
-      <ChatFAB
-        open={open}
-        hasNotification={notif}
-        onClick={() => setOpen((v) => !v)}
-      />
+      {hasNotebook && (
+        <ChatFAB
+          open={open}
+          hasNotification={notif}
+          onClick={() => setOpen((v) => !v)}
+        />
+      )}
       <ChatPanel open={open}>
         {({ onHeaderMouseDown }) => (
           <>
@@ -180,6 +176,7 @@ export function App({ settings, tracker, openSignal }: AppProps) {
             )}
             <ChatInput
               sending={chat.sending}
+              queuedCount={chat.queuedCount}
               attachments={chat.attachments}
               onAttach={(atts) => chat.setAttachments((prev) => [...prev, ...atts])}
               onRemoveAttachment={(i) =>

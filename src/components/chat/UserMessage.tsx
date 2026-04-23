@@ -2,6 +2,7 @@ import * as React from 'react';
 import { Pencil, X, Check } from 'lucide-react';
 import { Button } from '../ui/button';
 import { Textarea } from '../ui/textarea';
+import { AUTO_PREFIX } from '../../hooks/useChat';
 import { cn } from '../../lib/utils';
 
 interface Props {
@@ -29,8 +30,13 @@ export function UserMessage({ displayText, content, serverIdx, onEdit, onDelete 
   const [draft, setDraft] = React.useState(displayText);
   const [lightbox, setLightbox] = React.useState<string | null>(null);
   const taRef = React.useRef<HTMLTextAreaElement>(null);
-  const canEdit = serverIdx !== undefined && onEdit && onDelete;
   const images = React.useMemo(() => extractImages(content), [content]);
+  // Auto follow-ups (the frontend synthesizes these for view-image chains and
+  // continue hops) are hidden from the UI — only the images they carry stay
+  // visible, so the user still sees what the assistant looked at.
+  const isAuto = displayText.startsWith(AUTO_PREFIX);
+  const canEdit = !isAuto && serverIdx !== undefined && onEdit && onDelete;
+  const visibleText = isAuto ? '' : displayText;
 
   React.useEffect(() => {
     if (editing && taRef.current) {
@@ -109,7 +115,7 @@ export function UserMessage({ displayText, content, serverIdx, onEdit, onDelete 
           ))}
         </div>
       )}
-      {displayText && (
+      {visibleText && (
         <div
           className={cn(
             'bg-brand text-white rounded-lg rounded-br-sm px-3.5 py-2.5',
@@ -117,7 +123,7 @@ export function UserMessage({ displayText, content, serverIdx, onEdit, onDelete 
             'text-sm-plus leading-relaxed font-sans'
           )}
         >
-          {displayText}
+          {visibleText}
         </div>
       )}
       {lightbox && (

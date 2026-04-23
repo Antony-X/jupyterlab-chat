@@ -60,6 +60,17 @@ const components: Components = {
     const baseClasses =
       'relative my-2.5 overflow-x-auto rounded-md bg-code-bg text-code-fg p-3.5 text-xs leading-relaxed border-l-2 border-muted shadow-[0_2px_10px_-4px_rgba(31,27,22,.3)] font-mono';
 
+    // Delete has no body by design — rendering it as a full code block
+    // gives you an empty black rectangle with just a badge on top. Show a
+    // single compact line instead so it reads like a log entry, not code.
+    if (meta && meta.isDelete) {
+      return (
+        <div className="my-1.5 text-xs text-muted font-mono">
+          {meta.label}
+        </div>
+      );
+    }
+
     if (!meta) {
       return (
         <pre className={baseClasses} {...rest}>
@@ -69,7 +80,7 @@ const components: Components = {
     }
     return (
       <pre
-        className={cn(baseClasses, 'jc-action-pre', meta.isDelete && 'jc-action-del')}
+        className={cn(baseClasses, 'jc-action-pre')}
         {...rest}
       >
         {children}

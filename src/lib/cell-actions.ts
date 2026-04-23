@@ -4,7 +4,9 @@ export type CellActionKind =
   | 'insert-after'
   | 'insert-before'
   | 'delete'
-  | 'view-image';
+  | 'view-image'
+  | 'view-output'
+  | 'continue';
 
 export interface CellAction {
   kind: CellActionKind;
@@ -19,11 +21,13 @@ export function tagToAction(tag: string): CellActionKind | null {
   if (tag === 'python-insert-before' || tag === 'py-insert-before' || tag === 'insert-before') return 'insert-before';
   if (tag === 'python-delete' || tag === 'py-delete' || tag === 'delete-cell') return 'delete';
   if (tag === 'view-image' || tag === 'see-image' || tag === 'look-image' || tag === 'view') return 'view-image';
+  if (tag === 'view-output' || tag === 'see-output' || tag === 'inspect-output' || tag === 'inspect-cell') return 'view-output';
+  if (tag === 'continue' || tag === 'observe' || tag === 'next-step') return 'continue';
   return null;
 }
 
 // kinds whose fenced body is allowed to be empty
-const NO_BODY = new Set<CellActionKind>(['delete', 'view-image']);
+const NO_BODY = new Set<CellActionKind>(['delete', 'view-image', 'view-output', 'continue']);
 
 export function extractCellActions(text: string): CellAction[] {
   const out: CellAction[] = [];
@@ -54,5 +58,7 @@ export function actionLabel(action: CellAction): string {
   if (action.kind === 'insert-before') return action.index ? `↱ before cell ${action.index}` : '↱ inserted';
   if (action.kind === 'delete') return action.index ? `✕ delete cell ${action.index}` : '✕ delete';
   if (action.kind === 'view-image') return action.index ? `🖼 view cell ${action.index}` : '🖼 view';
+  if (action.kind === 'view-output') return action.index ? `📄 inspect cell ${action.index}` : '📄 inspect';
+  if (action.kind === 'continue') return '⟳ continuing';
   return '';
 }

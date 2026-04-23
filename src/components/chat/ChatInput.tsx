@@ -14,6 +14,7 @@ const LARGE_TEXT_PASTE_THRESHOLD = 3000;
 
 interface Props {
   sending: boolean;
+  queuedCount: number;
   attachments: Attachment[];
   onAttach: (files: Attachment[]) => void;
   onRemoveAttachment: (idx: number) => void;
@@ -24,6 +25,7 @@ interface Props {
 
 export function ChatInput({
   sending,
+  queuedCount,
   attachments,
   onAttach,
   onRemoveAttachment,
@@ -36,9 +38,11 @@ export function ChatInput({
   const fileRef = React.useRef<HTMLInputElement>(null);
   const taRef = React.useRef<HTMLTextAreaElement>(null);
 
+  // Enter always submits, even while the assistant is streaming — the chat
+  // hook queues the message and fires it the moment the current send finishes.
   const submit = () => {
     const v = text.trim();
-    if ((!v && !attachments.length) || sending) return;
+    if (!v && !attachments.length) return;
     setText('');
     onSend(v);
   };
@@ -46,10 +50,16 @@ export function ChatInput({
   const handleFiles = async (list: FileList | null) => {
     if (!list) return;
     const atts: Attachment[] = [];
+    const failures: string[] = [];
     for (const f of Array.from(list)) {
-      atts.push(await readFile(f));
+      try {
+        atts.push(await readFile(f));
+      } catch (err: any) {
+        failures.push(err?.message ?? String(err));
+      }
     }
     if (atts.length) onAttach(atts);
+    if (failures.length) window.alert(failures.join('\n'));
   };
 
   const handlePaste = async (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
@@ -65,8 +75,17 @@ export function ChatInput({
     }
     if (imageFiles.length) {
       e.preventDefault();
-      const atts = await Promise.all(imageFiles.map(readFile));
-      onAttach(atts);
+      const atts: Attachment[] = [];
+      const failures: string[] = [];
+      for (const f of imageFiles) {
+        try {
+          atts.push(await readFile(f));
+        } catch (err: any) {
+          failures.push(err?.message ?? String(err));
+        }
+      }
+      if (atts.length) onAttach(atts);
+      if (failures.length) window.alert(failures.join('\n'));
       return;
     }
 
@@ -110,10 +129,14 @@ export function ChatInput({
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) {
               e.preventDefault();
-              if (!sending) submit();
+              submit();
             }
           }}
-          placeholder="Ask anything… (Enter to send, Shift+Enter for newline)"
+          placeholder={
+            sending
+              ? 'Assistant is replying… (Enter to queue)'
+              : 'Ask anything… (Enter to send, Shift+Enter for newline)'
+          }
           rows={2}
           className="bg-input-bg-2 min-h-[54px] max-h-[180px] text-sm-plus"
         />
@@ -149,23 +172,30 @@ export function ChatInput({
             }}
           />
           <div className="flex-1" />
-          {sending ? (
+          {queuedCount > 0 && (
+            <span
+              className="text-[11px] text-muted px-1.5"
+              title={`${queuedCount} queued — will send after current reply`}
+            >
+              {queuedCount} queued
+            </span>
+          )}
+          {sending && (
             <Button variant="stop" size="sm" onClick={onStop} title="Stop">
               <Square size={12} fill="currentColor" />
               Stop
             </Button>
-          ) : (
-            <Button
-              variant="default"
-              size="sm"
-              onClick={submit}
-              disabled={!text.trim() && !attachments.length}
-              title="Send (Enter)"
-            >
-              <Send size={13} />
-              Send
-            </Button>
           )}
+          <Button
+            variant="default"
+            size="sm"
+            onClick={submit}
+            disabled={!text.trim() && !attachments.length}
+            title={sending ? 'Queue (Enter)' : 'Send (Enter)'}
+          >
+            <Send size={13} />
+            {sending ? 'Queue' : 'Send'}
+          </Button>
         </div>
       </div>
     </div>

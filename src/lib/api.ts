@@ -2,6 +2,40 @@ import { URLExt } from '@jupyterlab/coreutils';
 import { ServerConnection } from '@jupyterlab/services';
 import { xsrf } from './utils';
 
+// Stable per-tab identifier so the backend keeps our chat buffer separate
+// from other open tabs/notebooks. Stored in sessionStorage so an accidental
+// refresh (or devtools reload) keeps the server-side in-memory history alive
+// for this tab. A brand-new tab gets its own UUID; closing the tab discards it.
+const CID_KEY = 'jupyterlab-chat:cid';
+function initClientId(): string {
+  try {
+    const cached = sessionStorage.getItem(CID_KEY);
+    if (cached) return cached;
+  } catch {
+    /* storage disabled (private mode); fall through */
+  }
+  const fresh =
+    typeof crypto !== 'undefined' && crypto.randomUUID
+      ? crypto.randomUUID()
+      : `c_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  try {
+    sessionStorage.setItem(CID_KEY, fresh);
+  } catch {
+    /* ignore */
+  }
+  return fresh;
+}
+const CLIENT_ID: string = initClientId();
+
+function withClientId<T extends object>(body: T): T & { client_id: string } {
+  return { ...body, client_id: CLIENT_ID };
+}
+
+function cidQuery(extra = ''): string {
+  const base = `?client_id=${encodeURIComponent(CLIENT_ID)}`;
+  return extra ? `${base}&${extra}` : base;
+}
+
 export interface SessionSummary {
   id: string;
   title: string;
@@ -26,7 +60,9 @@ export async function chatSync(
     url,
     {
       method: 'POST',
-      body: JSON.stringify({ content, context: ctx, model, web_search: webSearch }),
+      body: JSON.stringify(
+        withClientId({ content, context: ctx, model, web_search: webSearch })
+      ),
     },
     s
   );
@@ -55,7 +91,9 @@ export async function chatStream(
     method: 'POST',
     headers: hdrs,
     credentials: 'same-origin',
-    body: JSON.stringify({ content, context: ctx, model, web_search: webSearch }),
+    body: JSON.stringify(
+      withClientId({ content, context: ctx, model, web_search: webSearch })
+    ),
     signal,
   });
   if (!resp.ok) {
@@ -96,14 +134,14 @@ export async function chatStream(
 }
 
 export async function getHistory(s: ServerConnection.ISettings): Promise<ChatMessage[]> {
-  const url = URLExt.join(s.baseUrl, 'api/chat/history');
+  const url = URLExt.join(s.baseUrl, 'api/chat/history') + cidQuery();
   const r = await ServerConnection.makeRequest(url, {}, s);
   const d = await r.json();
   return d.history || [];
 }
 
 export async function clearHistory(s: ServerConnection.ISettings): Promise<void> {
-  const url = URLExt.join(s.baseUrl, 'api/chat/history');
+  const url = URLExt.join(s.baseUrl, 'api/chat/history') + cidQuery();
   await ServerConnection.makeRequest(url, { method: 'DELETE' }, s);
 }
 
@@ -111,23 +149,34 @@ export async function deleteFromIdx(s: ServerConnection.ISettings, idx: number):
   const url = URLExt.join(s.baseUrl, 'api/chat/history');
   await ServerConnection.makeRequest(
     url,
-    { method: 'PUT', body: JSON.stringify({ action: 'delete_from', index: idx }) },
+    {
+      method: 'PUT',
+      body: JSON.stringify(withClientId({ action: 'delete_from', index: idx })),
+    },
     s
   );
 }
 
-export async function listSessions(s: ServerConnection.ISettings): Promise<SessionSummary[]> {
-  const url = URLExt.join(s.baseUrl, 'api/chat/sessions');
+export async function listSessions(
+  s: ServerConnection.ISettings,
+  folder = ''
+): Promise<SessionSummary[]> {
+  const qs = folder ? `?folder=${encodeURIComponent(folder)}` : '';
+  const url = URLExt.join(s.baseUrl, 'api/chat/sessions') + qs;
   const r = await ServerConnection.makeRequest(url, {}, s);
   const d = await r.json();
   return d.sessions || [];
 }
 
-export async function loadSession(s: ServerConnection.ISettings, id: string): Promise<{ messages: ChatMessage[]; title: string }> {
+export async function loadSession(
+  s: ServerConnection.ISettings,
+  id: string,
+  folder = ''
+): Promise<{ messages: ChatMessage[]; title: string }> {
   const url = URLExt.join(s.baseUrl, 'api/chat/sessions');
   const r = await ServerConnection.makeRequest(
     url,
-    { method: 'PUT', body: JSON.stringify({ id }) },
+    { method: 'PUT', body: JSON.stringify(withClientId({ id, folder })) },
     s
   );
   const d = await r.json();
@@ -136,18 +185,25 @@ export async function loadSession(s: ServerConnection.ISettings, id: string): Pr
 
 export async function saveSession(
   s: ServerConnection.ISettings,
-  opts: { id?: string; title?: string } = {}
+  opts: { id?: string; title?: string; folder?: string } = {}
 ): Promise<{ id: string; title: string }> {
   const url = URLExt.join(s.baseUrl, 'api/chat/sessions');
   const r = await ServerConnection.makeRequest(
     url,
-    { method: 'POST', body: JSON.stringify(opts) },
+    { method: 'POST', body: JSON.stringify(withClientId(opts)) },
     s
   );
   return r.json();
 }
 
-export async function deleteSession(s: ServerConnection.ISettings, id: string): Promise<void> {
-  const url = URLExt.join(s.baseUrl, 'api/chat/sessions') + `?id=${encodeURIComponent(id)}`;
+export async function deleteSession(
+  s: ServerConnection.ISettings,
+  id: string,
+  folder = ''
+): Promise<void> {
+  const qs = folder ? `&folder=${encodeURIComponent(folder)}` : '';
+  const url =
+    URLExt.join(s.baseUrl, 'api/chat/sessions') +
+    `?id=${encodeURIComponent(id)}${qs}`;
   await ServerConnection.makeRequest(url, { method: 'DELETE' }, s);
 }

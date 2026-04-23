@@ -52,6 +52,16 @@
   --jc-input-bg: #22201b;
   --jc-input-bg-2: #2a2721;
   --jc-scroll: #33302a;
+  color-scheme: dark;
+}
+
+/* Make the native <select> dropdown readable in dark mode. Options inherit
+   these colors in Chromium; the color-scheme hint above picks the right
+   Windows/macOS menu chrome. */
+.jchat-root.dark select,
+.jchat-root.dark option {
+  background-color: var(--jc-paper-2);
+  color: var(--jc-ink);
 }
 
 /* Custom scrollbar only inside the panel */

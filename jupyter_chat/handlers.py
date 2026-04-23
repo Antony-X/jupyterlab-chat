@@ -1,11 +1,21 @@
 import json
 import os
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 
 import tornado.httpclient
 import tornado.web
 from jupyter_server.base.handlers import APIHandler
+
+# Rolling window for what we actually send to the model. The full on-disk
+# history is untouched; only the OUTBOUND request is trimmed. Keeps latency
+# and the uncached portion of cost bounded on long chats.
+HISTORY_WINDOW = 40
+
+# LRU cap on the per-client in-memory history dict. Prevents unbounded
+# growth as new tabs / page loads accumulate over the life of the server.
+MAX_CLIENTS = 50
 
 SYSTEM_PROMPT = """\
 You are an AI coding assistant + patient tutor embedded in a Jupyter Notebook with **DIRECT READ AND WRITE ACCESS to the notebook**.
@@ -23,6 +33,8 @@ This is the single most important capability. The host environment parses specia
 | ```` ```python-insert-before:N ````| insert a NEW code cell right before cell N and run it |
 | ```` ```python-delete:N ````       | delete cell N (body can be empty) |
 | ```` ```view-image:N ````          | inspect the image output of cell N — frontend re-invokes you with that image attached so you can actually see it. Body empty. |
+| ```` ```view-output:N ````         | get the full untruncated text/error output of cell N — frontend re-invokes you with the output appended. Use this whenever the `→ ...` line in context is truncated and you need the full text (long traceback, big DataFrame, multi-line print). Body empty. |
+| ```` ```continue ````              | request one more turn after your actions run. Frontend re-invokes you with the notebook's updated state so you can observe outputs and decide next steps. Body empty. |
 | ```` ```python ````                | DISPLAY ONLY. Never executed. Use for illustrative snippets inside prose. |
 
 Cell numbers are 1-based and match the `[Cell N/total]` labels in the notebook context you're given. When you emit multiple structural actions, use the ORIGINAL numbers for all of them — the frontend applies them in reverse to keep indices stable.
@@ -47,6 +59,31 @@ print('end')
 ```
 
 That's it. Three fences, done. The notebook changes and the cells run.
+
+### The notebook context block IS the live state — trust it
+The `[Cell N/total]` blocks you receive on every turn reflect the live notebook AFTER any actions you took on prior turns. If you deleted cell 4 last turn, the block this turn will not include the old cell 4, and the cells that were after it will have shifted up.
+
+Hard rules:
+- DO NOT run `print(...)`, `len(In)`, or any kernel introspection code to "check" the notebook state. The context block already shows it. Running diagnostic code wastes a cell and produces a stale answer.
+- If the context shows a "RECENT ACTIONS YOU TOOK" log at the top, those are the structural changes you've already applied. Believe them. Do not redo work the log says you already did.
+- If a cell's `→` output line is truncated and you genuinely need the full text/traceback, emit `view-output:N` rather than guessing from the truncated form or re-running the cell.
+- If the user says "I still see X" but the context shows X is gone, tell them to refresh / share what they see — do not silently re-apply the same fix expecting a different result.
+
+### Agentic continuation — `continue` fence (use sparingly)
+End your response with an empty ```` ```continue``` ```` fence ONLY when your next step genuinely depends on what the last action produced — e.g. the code might fail in a non-obvious way, the output shape is unknown and affects what you do next, you ran code that renders an image and want to view it, or you're doing a multi-step investigation that can't be planned upfront.
+
+DO use continue:
+- after code that generates a plot or image you need to verify (combine with `view-image:N`)
+- when debugging: run, see the error/output, decide whether to patch or give up
+- iterative data exploration where step N+1 depends on step N's output
+
+DON'T use continue:
+- for straightforward one-shot tasks ("write a function to X" — just write it)
+- when the user asked a question you can answer without needing to see output
+- when your code obviously succeeds and the job is done
+- to "check your work" when there is nothing genuinely uncertain
+
+Cap: 5 continuations per user message. After that the frontend stops auto-invoking you. Use your budget wisely — each continue burns a turn.
 
 ### Forbidden phrases (NEVER say any of these)
 - "I can't directly edit other cells"
@@ -134,8 +171,53 @@ Prefer vectorized ops over Python loops: `einsum`, `scatter_add_`, `gather`, `to
 CHAT_DIR = ".jupyter-chat"
 
 
-def _chat_dir():
-    d = os.path.join(os.getcwd(), CHAT_DIR)
+def _read_env_var(path: str, name: str) -> str:
+    """Pull a single variable out of a .env file.
+
+    Handles the common dialect quirks: blank lines, comments, leading
+    `export`, single/double-quoted values, and trailing inline comments.
+    Returns "" if the variable isn't present or the file can't be read.
+    """
+    try:
+        with open(path, encoding="utf-8") as fh:
+            for raw in fh:
+                ln = raw.strip()
+                if not ln or ln.startswith("#"):
+                    continue
+                if ln.startswith("export "):
+                    ln = ln[len("export "):].lstrip()
+                if "=" not in ln:
+                    continue
+                key, _, val = ln.partition("=")
+                if key.strip() != name:
+                    continue
+                val = val.strip()
+                if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+                    return val[1:-1]
+                hash_pos = val.find(" #")
+                if hash_pos >= 0:
+                    val = val[:hash_pos].rstrip()
+                return val
+    except OSError:
+        pass
+    return ""
+
+
+def _chat_dir(folder: str = "") -> str:
+    """Resolve the per-folder `.jupyter-chat/` directory.
+
+    When `folder` is provided it's interpreted as a path relative to the
+    Jupyter server root. We refuse anything that escapes the root (absolute
+    paths, `..` traversal) and fall back to the server cwd in that case —
+    so a compromised frontend can't read/write outside the notebook tree.
+    """
+    root = os.path.abspath(os.getcwd())
+    base = root
+    if folder:
+        cand = os.path.abspath(os.path.join(root, folder))
+        if cand == root or cand.startswith(root + os.sep):
+            base = cand
+    d = os.path.join(base, CHAT_DIR)
     os.makedirs(d, exist_ok=True)
     return d
 
@@ -159,8 +241,32 @@ def _auto_title(history: list) -> str:
 
 
 class ChatState:
-    history: list = []
+    # Per-client histories keyed on a UUID the frontend picks at mount.
+    # OrderedDict so we can do LRU eviction: every read/write move_to_end's
+    # the key, and when we exceed MAX_CLIENTS we pop the oldest entry. Keeps
+    # the process from slowly leaking memory as tabs / refreshes pile up.
+    _histories: "OrderedDict[str, list]" = OrderedDict()
     _key: str | None = None
+
+    @classmethod
+    def history(cls, client_id: str) -> list:
+        if not client_id:
+            client_id = "default"
+        if client_id in cls._histories:
+            cls._histories.move_to_end(client_id)
+        else:
+            cls._histories[client_id] = []
+            while len(cls._histories) > MAX_CLIENTS:
+                cls._histories.popitem(last=False)
+        return cls._histories[client_id]
+
+    @classmethod
+    def set_history(cls, client_id: str, hist: list) -> None:
+        cid = client_id or "default"
+        cls._histories[cid] = hist
+        cls._histories.move_to_end(cid)
+        while len(cls._histories) > MAX_CLIENTS:
+            cls._histories.popitem(last=False)
 
     @classmethod
     def api_key(cls) -> str:
@@ -170,16 +276,28 @@ class ChatState:
         if not k:
             env = os.path.join(os.getcwd(), ".env")
             if os.path.exists(env):
-                for ln in open(env):
-                    ln = ln.strip()
-                    if ln.startswith("OPENROUTER_API_KEY="):
-                        k = ln.split("=", 1)[1].strip()
+                k = _read_env_var(env, "OPENROUTER_API_KEY")
         if k:
             cls._key = k
         return k or ""
 
 
 # ── Non-streaming (used by auto-fix) ─────────────────────
+
+
+def _trim_for_request(hist: list) -> list:
+    """Return the tail of `hist` that we actually send to the model.
+
+    Keeps the most recent HISTORY_WINDOW messages, but if the window would
+    start on an assistant turn we shift back by one so the model always sees
+    a clean user→assistant pairing at the start of the window.
+    """
+    if len(hist) <= HISTORY_WINDOW:
+        return hist
+    start = len(hist) - HISTORY_WINDOW
+    if start > 0 and hist[start].get("role") == "assistant":
+        start -= 1
+    return hist[start:]
 
 
 def _apply_web_search(model: str, web_search: bool) -> str:
@@ -195,20 +313,22 @@ class ChatHandler(APIHandler):
     @tornado.web.authenticated
     async def post(self):
         body = json.loads(self.request.body)
+        client_id = body.get("client_id") or "default"
         content = body.get("content", body.get("message", ""))
         ctx = body.get("context", "")
         model = body.get("model", "anthropic/claude-sonnet-4.6")
         web_search = bool(body.get("web_search", False))
         model = _apply_web_search(model, web_search)
 
-        ChatState.history.append({"role": "user", "content": content})
+        hist = ChatState.history(client_id)
+        hist.append({"role": "user", "content": content})
         key = ChatState.api_key()
         if not key:
             self.set_status(400)
             return self.finish(json.dumps({"error": "No OPENROUTER_API_KEY"}))
 
         sys = SYSTEM_PROMPT + (f"\n\nCurrent notebook:\n{ctx}" if ctx else "")
-        msgs = [{"role": "system", "content": sys}] + ChatState.history
+        msgs = [{"role": "system", "content": sys}] + _trim_for_request(hist)
 
         try:
             resp = await tornado.httpclient.AsyncHTTPClient().fetch(
@@ -224,11 +344,11 @@ class ChatHandler(APIHandler):
                 )
             )
             text = json.loads(resp.body)["choices"][0]["message"]["content"]
-            ChatState.history.append({"role": "assistant", "content": text})
+            hist.append({"role": "assistant", "content": text})
             self.finish(json.dumps({"response": text}))
         except Exception as e:
-            if ChatState.history and ChatState.history[-1]["role"] == "user":
-                ChatState.history.pop()
+            if hist and hist[-1]["role"] == "user":
+                hist.pop()
             self.set_status(500)
             self.finish(json.dumps({"error": str(e)}))
 
@@ -240,20 +360,22 @@ class ChatStreamHandler(APIHandler):
     @tornado.web.authenticated
     async def post(self):
         body = json.loads(self.request.body)
+        client_id = body.get("client_id") or "default"
         content = body.get("content", body.get("message", ""))
         ctx = body.get("context", "")
         model = body.get("model", "anthropic/claude-sonnet-4.6")
         web_search = bool(body.get("web_search", False))
         model = _apply_web_search(model, web_search)
 
-        ChatState.history.append({"role": "user", "content": content})
+        hist = ChatState.history(client_id)
+        hist.append({"role": "user", "content": content})
         key = ChatState.api_key()
         if not key:
             self.set_status(400)
             return self.finish(json.dumps({"error": "No OPENROUTER_API_KEY"}))
 
         sys_msg = SYSTEM_PROMPT + (f"\n\nCurrent notebook:\n{ctx}" if ctx else "")
-        msgs = [{"role": "system", "content": sys_msg}] + ChatState.history
+        msgs = [{"role": "system", "content": sys_msg}] + _trim_for_request(hist)
 
         self.set_header("Content-Type", "text/event-stream")
         self.set_header("Cache-Control", "no-cache")
@@ -314,9 +436,9 @@ class ChatStreamHandler(APIHandler):
 
         full = "".join(tokens)
         if full:
-            ChatState.history.append({"role": "assistant", "content": full})
-        elif ChatState.history and ChatState.history[-1]["role"] == "user":
-            ChatState.history.pop()
+            hist.append({"role": "assistant", "content": full})
+        elif hist and hist[-1]["role"] == "user":
+            hist.pop()
 
         if not closed[0]:
             try:
@@ -332,11 +454,13 @@ class ChatStreamHandler(APIHandler):
 class ChatHistoryHandler(APIHandler):
     @tornado.web.authenticated
     def get(self):
-        self.finish(json.dumps({"history": ChatState.history}))
+        cid = self.get_argument("client_id", "default")
+        self.finish(json.dumps({"history": ChatState.history(cid)}))
 
     @tornado.web.authenticated
     def delete(self):
-        ChatState.history.clear()
+        cid = self.get_argument("client_id", "default")
+        ChatState.history(cid).clear()
         self.finish(json.dumps({"status": "ok"}))
 
     @tornado.web.authenticated
@@ -347,20 +471,22 @@ class ChatHistoryHandler(APIHandler):
         - edit: replace content at index, remove everything after
         """
         body = json.loads(self.request.body)
+        cid = body.get("client_id") or "default"
+        hist = ChatState.history(cid)
         action = body.get("action", "")
         idx = int(body.get("index", -1))
-        if idx < 0 or idx >= len(ChatState.history):
+        if idx < 0 or idx >= len(hist):
             self.set_status(400)
             return self.finish(json.dumps({"error": "bad index"}))
         if action == "delete_from":
-            del ChatState.history[idx:]
+            del hist[idx:]
         elif action == "edit":
-            ChatState.history[idx]["content"] = body.get("content", "")
-            del ChatState.history[idx + 1:]
+            hist[idx]["content"] = body.get("content", "")
+            del hist[idx + 1:]
         else:
             self.set_status(400)
             return self.finish(json.dumps({"error": "bad action"}))
-        self.finish(json.dumps({"history": ChatState.history}))
+        self.finish(json.dumps({"history": hist}))
 
 
 # ── Session persistence ──────────────────────────────────
@@ -370,7 +496,8 @@ class ChatSessionHandler(APIHandler):
     @tornado.web.authenticated
     def get(self):
         sid = self.get_argument("id", None)
-        d = _chat_dir()
+        folder = self.get_argument("folder", "")
+        d = _chat_dir(folder)
         if sid:
             p = os.path.join(d, f"{sid}.json")
             if os.path.exists(p):
@@ -402,8 +529,10 @@ class ChatSessionHandler(APIHandler):
         Otherwise create a new one.
         """
         body = json.loads(self.request.body)
+        cid = body.get("client_id") or "default"
+        hist = ChatState.history(cid)
         sid = body.get("id", "")
-        d = _chat_dir()
+        d = _chat_dir(body.get("folder", ""))
 
         existing = None
         if sid:
@@ -416,10 +545,10 @@ class ChatSessionHandler(APIHandler):
 
         if not existing:
             sid = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            title = body.get("title") or _auto_title(ChatState.history)
+            title = body.get("title") or _auto_title(hist)
             date = datetime.now().isoformat()
         else:
-            title = body.get("title") or existing.get("title") or _auto_title(ChatState.history)
+            title = body.get("title") or existing.get("title") or _auto_title(hist)
             date = existing.get("date") or datetime.now().isoformat()
 
         Path(d, f"{sid}.json").write_text(
@@ -429,7 +558,7 @@ class ChatSessionHandler(APIHandler):
                     "title": title,
                     "date": date,
                     "updated": datetime.now().isoformat(),
-                    "messages": ChatState.history,
+                    "messages": hist,
                 },
                 indent=2,
             )
@@ -439,12 +568,13 @@ class ChatSessionHandler(APIHandler):
     @tornado.web.authenticated
     def put(self):
         body = json.loads(self.request.body)
+        cid = body.get("client_id") or "default"
         sid = body.get("id", "")
-        p = os.path.join(_chat_dir(), f"{sid}.json")
+        p = os.path.join(_chat_dir(body.get("folder", "")), f"{sid}.json")
         if os.path.exists(p):
             data = json.loads(Path(p).read_text())
-            ChatState.history[:] = data.get("messages", [])
-            self.finish(json.dumps({"messages": ChatState.history, "title": data.get("title", "")}))
+            ChatState.set_history(cid, list(data.get("messages", [])))
+            self.finish(json.dumps({"messages": ChatState.history(cid), "title": data.get("title", "")}))
         else:
             self.set_status(404)
             self.finish(json.dumps({"error": "not found"}))
@@ -452,7 +582,8 @@ class ChatSessionHandler(APIHandler):
     @tornado.web.authenticated
     def delete(self):
         sid = self.get_argument("id", "")
-        p = os.path.join(_chat_dir(), f"{sid}.json")
+        folder = self.get_argument("folder", "")
+        p = os.path.join(_chat_dir(folder), f"{sid}.json")
         if os.path.exists(p):
             os.remove(p)
         self.finish(json.dumps({"status": "ok"}))

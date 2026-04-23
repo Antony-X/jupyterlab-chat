@@ -7,6 +7,8 @@ export interface Geometry {
   height: number;
 }
 
+export type ResizeEdge = 'n' | 's' | 'e' | 'w' | 'ne' | 'nw' | 'se' | 'sw';
+
 const INIT_W = 480;
 const INIT_H = 560;
 const MIN_W = 320;
@@ -21,28 +23,72 @@ function defaultGeometry(): Geometry {
   };
 }
 
+interface ResizeState {
+  edge: ResizeEdge;
+  startX: number;
+  startY: number;
+  startGeom: Geometry;
+}
+
 export function useDragResize(panelRef: RefObject<HTMLElement>) {
   const [geom, setGeom] = useState<Geometry>(defaultGeometry);
   const drag = useRef<{ dx: number; dy: number } | null>(null);
-  const resize = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const resize = useRef<ResizeState | null>(null);
 
   useEffect(() => {
+    // Keep at least this much of the header visible no matter how far the
+    // user drags. Without a clamp the panel can end up fully off-screen with
+    // no way to retrieve it — position is state-persisted across reopens.
+    const EDGE_MARGIN = 40;
+    const clampLeft = (l: number, w: number) =>
+      Math.max(
+        EDGE_MARGIN - w,
+        Math.min(window.innerWidth - EDGE_MARGIN, l)
+      );
+    const clampTop = (t: number) =>
+      Math.max(0, Math.min(window.innerHeight - EDGE_MARGIN, t));
+
     const onMove = (e: MouseEvent) => {
       if (drag.current) {
-        setGeom(g => ({ ...g, left: e.clientX - drag.current!.dx, top: e.clientY - drag.current!.dy }));
-      }
-      if (resize.current) {
-        const { x, y, w, h } = resize.current;
         setGeom(g => ({
           ...g,
-          width: Math.max(MIN_W, w + e.clientX - x),
-          height: Math.max(MIN_H, h + e.clientY - y),
+          left: clampLeft(e.clientX - drag.current!.dx, g.width),
+          top: clampTop(e.clientY - drag.current!.dy),
         }));
+      }
+      if (resize.current) {
+        const { edge, startX, startY, startGeom } = resize.current;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        setGeom(() => {
+          let { left, top, width, height } = startGeom;
+          if (edge.includes('e')) {
+            width = Math.max(MIN_W, startGeom.width + dx);
+          }
+          if (edge.includes('s')) {
+            height = Math.max(MIN_H, startGeom.height + dy);
+          }
+          // W/N edges adjust left/top so the opposite edge stays anchored.
+          // Use the clamped width/height in the shift so the panel doesn't
+          // jump right/down once we bottom out at MIN_W/MIN_H.
+          if (edge.includes('w')) {
+            const newW = Math.max(MIN_W, startGeom.width - dx);
+            left = startGeom.left + (startGeom.width - newW);
+            width = newW;
+          }
+          if (edge.includes('n')) {
+            const newH = Math.max(MIN_H, startGeom.height - dy);
+            top = startGeom.top + (startGeom.height - newH);
+            height = newH;
+          }
+          return { left, top, width, height };
+        });
       }
     };
     const onUp = () => {
       drag.current = null;
       resize.current = null;
+      document.body.style.userSelect = '';
     };
     document.addEventListener('mousemove', onMove);
     document.addEventListener('mouseup', onUp);
@@ -62,18 +108,27 @@ export function useDragResize(panelRef: RefObject<HTMLElement>) {
     e.preventDefault();
   }, [panelRef]);
 
-  const onResizeMouseDown = useCallback((e: React.MouseEvent) => {
-    const panel = panelRef.current;
-    if (!panel) return;
-    resize.current = {
-      x: e.clientX,
-      y: e.clientY,
-      w: panel.offsetWidth,
-      h: panel.offsetHeight,
-    };
-    e.preventDefault();
-    e.stopPropagation();
-  }, [panelRef]);
+  const onResizeMouseDown = useCallback(
+    (edge: ResizeEdge) => (e: React.MouseEvent) => {
+      const panel = panelRef.current;
+      if (!panel) return;
+      resize.current = {
+        edge,
+        startX: e.clientX,
+        startY: e.clientY,
+        startGeom: {
+          left: panel.offsetLeft,
+          top: panel.offsetTop,
+          width: panel.offsetWidth,
+          height: panel.offsetHeight,
+        },
+      };
+      document.body.style.userSelect = 'none';
+      e.preventDefault();
+      e.stopPropagation();
+    },
+    [panelRef]
+  );
 
   return { geom, onHeaderMouseDown, onResizeMouseDown };
 }

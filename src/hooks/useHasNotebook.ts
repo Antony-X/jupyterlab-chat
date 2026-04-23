@@ -2,15 +2,14 @@ import { INotebookTracker } from '@jupyterlab/notebook';
 import { useEffect, useState } from 'react';
 
 /**
- * Returns true when there is at least one open notebook. Used to gate the
- * chat FAB on the Launcher / non-notebook tabs.
- *
- * Subscribes to each tracked notebook's `disposed` signal because closing
- * the last notebook while a non-notebook tab (e.g. Launcher) is focused
- * doesn't always flip currentWidget through currentChanged.
+ * Returns true whenever at least one notebook is open anywhere in the lab
+ * shell. We check `tracker.size` (count of tracked notebooks) rather than
+ * `tracker.currentWidget` because the latter flips to null the instant the
+ * user focuses a non-notebook tab (File Browser, Launcher, Terminal) — which
+ * would yank the chat panel out from under them every time they click away.
  */
 export function useHasNotebook(tracker: INotebookTracker | null): boolean {
-  const [has, setHas] = useState<boolean>(() => !!tracker?.currentWidget);
+  const [has, setHas] = useState<boolean>(() => !!tracker && tracker.size > 0);
 
   useEffect(() => {
     if (!tracker) {
@@ -18,7 +17,7 @@ export function useHasNotebook(tracker: INotebookTracker | null): boolean {
       return;
     }
 
-    const update = () => setHas(!!tracker.currentWidget);
+    const update = () => setHas(tracker.size > 0);
     const disposers: Array<() => void> = [];
 
     const watch = (widget: any) => {
@@ -41,11 +40,9 @@ export function useHasNotebook(tracker: INotebookTracker | null): boolean {
     };
 
     update();
-    tracker.currentChanged.connect(update);
     tracker.widgetAdded.connect(onAdded);
 
     return () => {
-      tracker.currentChanged.disconnect(update);
       tracker.widgetAdded.disconnect(onAdded);
       while (disposers.length) disposers.pop()?.();
     };

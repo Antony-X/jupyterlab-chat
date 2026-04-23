@@ -19,7 +19,7 @@ export function ChatFAB({ open, hasNotification, onClick }: Props) {
         'fixed bottom-5 right-5 z-[9998] h-12 w-12 rounded-full',
         'bg-header-bg text-header-fg',
         'shadow-fab transition-[transform,background-color] duration-200 ease-out',
-        'relative flex items-center justify-center',
+        'flex items-center justify-center',
         'hover:scale-105 hover:bg-ink-soft',
         'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand focus-visible:ring-offset-2',
         hasNotification && !open && 'animate-jc-pulse'

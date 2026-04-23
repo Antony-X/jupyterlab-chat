@@ -9,10 +9,15 @@ import {
   executeAction,
   findLastError,
   getCellImageData,
+  getCellTextOutput,
   getContext,
+  getNotebookDir,
   makeContent,
   userText,
 } from '../lib/notebook';
+
+export { AUTO_PREFIX } from '../lib/constants';
+import { AUTO_PREFIX } from '../lib/constants';
 
 export type DisplayKind = 'user' | 'assistant' | 'status' | 'error' | 'stopped';
 
@@ -34,6 +39,11 @@ export interface UseChatOpts {
   initialModel: string;
 }
 
+interface QueuedSend {
+  text: string;
+  attachments: Attachment[];
+}
+
 export function useChat(opts: UseChatOpts) {
   const { settings, tracker } = opts;
   const [messages, setMessages] = useState<DisplayMsg[]>([]);
@@ -43,8 +53,19 @@ export function useChat(opts: UseChatOpts) {
   const [webSearch, setWebSearch] = useState(false);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [sending, setSending] = useState(false);
+  // Queue for messages typed while a response is still streaming. We drain
+  // FIFO at the end of each send. Kept as a ref so we can append without
+  // re-running sendMessage's useCallback.
+  const queueRef = useRef<QueuedSend[]>([]);
+  const [queuedCount, setQueuedCount] = useState(0);
   const abortRef = useRef<AbortController | null>(null);
   const autoFixRunning = useRef(false);
+  // Rolling log of structural/run actions. Injected into context so the LLM
+  // sees what it has already done and stops re-deleting the same cell when
+  // the user says "still see errors" — without the breadcrumb the model
+  // confabulates from chat history instead of trusting fresh notebook state.
+  const recentActionsRef = useRef<string[]>([]);
+  const RECENT_ACTIONS_CAP = 10;
 
   const historyToDisplay = useCallback((hist: api.ChatMessage[]): DisplayMsg[] => {
     const out: DisplayMsg[] = [];
@@ -78,23 +99,26 @@ export function useChat(opts: UseChatOpts) {
     try {
       const hist = await api.getHistory(settings);
       if (hist.every(m => m.role === 'system')) return;
+      const folder = getNotebookDir(tracker);
       const res = await api.saveSession(
         settings,
-        currentSessionId ? { id: currentSessionId } : {}
+        currentSessionId
+          ? { id: currentSessionId, folder }
+          : { folder }
       );
       if (res.id) setCurrentSessionId(res.id);
     } catch {
       /* ignore */
     }
-  }, [settings, currentSessionId]);
+  }, [settings, currentSessionId, tracker]);
 
   const refreshSessions = useCallback(async () => {
     try {
-      setSessions(await api.listSessions(settings));
+      setSessions(await api.listSessions(settings, getNotebookDir(tracker)));
     } catch {
       setSessions([]);
     }
-  }, [settings]);
+  }, [settings, tracker]);
 
   const newChat = useCallback(async () => {
     setCurrentSessionId(null);
@@ -105,6 +129,7 @@ export function useChat(opts: UseChatOpts) {
     }
     setMessages([]);
     setAttachments([]);
+    recentActionsRef.current = [];
   }, [settings]);
 
   const saveChat = useCallback(
@@ -113,6 +138,7 @@ export function useChat(opts: UseChatOpts) {
         const res = await api.saveSession(settings, {
           id: currentSessionId ?? undefined,
           title: title || undefined,
+          folder: getNotebookDir(tracker),
         });
         if (res.id) setCurrentSessionId(res.id);
         return res.id;
@@ -120,33 +146,37 @@ export function useChat(opts: UseChatOpts) {
         return null;
       }
     },
-    [settings, currentSessionId]
+    [settings, currentSessionId, tracker]
   );
 
   const loadSessionById = useCallback(
     async (id: string) => {
       try {
-        const { messages: srvMsgs } = await api.loadSession(settings, id);
+        const { messages: srvMsgs } = await api.loadSession(
+          settings,
+          id,
+          getNotebookDir(tracker)
+        );
         setCurrentSessionId(id);
         setMessages(historyToDisplay(srvMsgs));
       } catch {
         /* ignore */
       }
     },
-    [settings, historyToDisplay]
+    [settings, historyToDisplay, tracker]
   );
 
   const removeSession = useCallback(
     async (id: string) => {
       try {
-        await api.deleteSession(settings, id);
+        await api.deleteSession(settings, id, getNotebookDir(tracker));
       } catch {
         /* ignore */
       }
       if (id === currentSessionId) setCurrentSessionId(null);
       setSessions(prev => prev.filter(s => s.id !== id));
     },
-    [settings, currentSessionId]
+    [settings, currentSessionId, tracker]
   );
 
   const exportMd = useCallback(async () => {
@@ -201,7 +231,15 @@ export function useChat(opts: UseChatOpts) {
   const sendMessage = useCallback(
     async (rawText: string, rawAttachments: Attachment[], depth = 0) => {
       const text = rawText.trim();
-      if ((!text && !rawAttachments.length) || sending) return;
+      if (!text && !rawAttachments.length) return;
+      // Already streaming: queue and let the in-flight send drain it when
+      // it finishes. depth>0 means this is an internal auto-chained call
+      // (view-image follow-up) and must bypass the queue.
+      if (sending && depth === 0) {
+        queueRef.current.push({ text: rawText, attachments: rawAttachments });
+        setQueuedCount(queueRef.current.length);
+        return;
+      }
       setSending(true);
 
       const content = makeContent(text, rawAttachments);
@@ -218,7 +256,7 @@ export function useChat(opts: UseChatOpts) {
 
       const ctrl = new AbortController();
       abortRef.current = ctrl;
-      const ctx = getContext(tracker);
+      const ctx = getContext(tracker, recentActionsRef.current);
       let fullText = '';
       let aborted = false;
 
@@ -275,17 +313,35 @@ export function useChat(opts: UseChatOpts) {
       }
 
       let viewImageRequests: Array<{ index?: number }> = [];
+      let viewOutputRequests: Array<{ index?: number }> = [];
+      let wantsContinue = false;
       let lastRunZeroIdx: number | undefined;
+
+      const recordAction = (label: string) => {
+        recentActionsRef.current.push(label);
+        if (recentActionsRef.current.length > RECENT_ACTIONS_CAP) {
+          recentActionsRef.current.shift();
+        }
+      };
 
       if (!aborted && tracker && fullText) {
         const actions = extractCellActions(fullText);
         if (actions.length) {
-          addStatus(`running ${actions.length} action${actions.length > 1 ? 's' : ''}…`);
+          wantsContinue = actions.some(a => a.kind === 'continue');
+          const mutating = actions.filter(
+            a => a.kind !== 'view-image' && a.kind !== 'view-output' && a.kind !== 'continue'
+          );
+
+          if (mutating.length) {
+            addStatus(`running ${mutating.length} action${mutating.length > 1 ? 's' : ''}…`);
+          }
           autoFixRunning.current = true;
           try {
-            const mutating = actions.filter(a => a.kind !== 'view-image');
             viewImageRequests = actions
               .filter(a => a.kind === 'view-image')
+              .map(a => ({ index: a.index }));
+            viewOutputRequests = actions
+              .filter(a => a.kind === 'view-output')
               .map(a => ({ index: a.index }));
 
             const hasStructural = mutating.some(
@@ -302,17 +358,21 @@ export function useChat(opts: UseChatOpts) {
                   addStatus,
                   v => {
                     autoFixRunning.current = v;
-                  }
+                  },
+                  ctrl.signal
                 );
-                lastRunZeroIdx = tracker.currentWidget?.content.model
+                const newLast = tracker.currentWidget?.content.model
                   ? tracker.currentWidget.content.model.cells.length - 1
                   : undefined;
+                lastRunZeroIdx = newLast;
+                recordAction(newLast !== undefined ? `ran new cell ${newLast + 1}` : 'ran new cell');
               } else {
                 const r = await executeAction(tracker, a);
                 addStatus(
                   r.error ? `⚠ ${r.label}: ${r.error.split('\n')[0]}` : r.label
                 );
                 if (r.cellIdx >= 0) lastRunZeroIdx = r.cellIdx;
+                recordAction(r.error ? `${r.label} — errored: ${r.error.split('\n')[0]}` : r.label);
               }
             }
           } finally {
@@ -322,16 +382,30 @@ export function useChat(opts: UseChatOpts) {
         }
       }
 
-      setSending(false);
       abortRef.current = null;
       await refreshFromServer();
-      autosave();
+      await autosave();
+      setSending(false);
 
-      // Follow-up turn for view-image requests. Cap at one level so the LLM
-      // can't trigger an endless see-and-ask chain.
-      if (viewImageRequests.length && tracker && depth < 1) {
+      // Auto-chained follow-ups. Two mechanisms share the same depth counter:
+      //   • view-image — LLM asked to see a cell's image output
+      //   • continue   — LLM wants to observe post-run notebook state and
+      //                  maybe take more action
+      // Capped at 5 total hops per original user message so a stuck model
+      // can't burn tokens indefinitely. If the user has typed something new
+      // and it's sitting in the queue, we break out of the chain so their
+      // message fires instead of waiting behind 5 hops.
+      const MAX_AGENT_HOPS = 5;
+      const userIsWaiting = queueRef.current.length > 0;
+      const canAutoChain = tracker && depth < MAX_AGENT_HOPS && !userIsWaiting;
+
+      const wantsView = viewImageRequests.length > 0 || viewOutputRequests.length > 0;
+      if (wantsView && canAutoChain) {
         const atts: Attachment[] = [];
-        const seenCells: number[] = [];
+        const seenImageCells: number[] = [];
+        const outputBlocks: string[] = [];
+        const seenOutputCells: number[] = [];
+
         for (const req of viewImageRequests) {
           const img = getCellImageData(tracker, req.index, lastRunZeroIdx);
           if (!img) continue;
@@ -340,18 +414,48 @@ export function useChat(opts: UseChatOpts) {
             mime: img.mime,
             data: img.dataUri,
           });
-          seenCells.push(img.cellIdx + 1);
+          seenImageCells.push(img.cellIdx + 1);
         }
-        if (atts.length) {
-          addStatus(`viewing image${atts.length > 1 ? 's' : ''} from cell ${seenCells.join(', ')}…`);
-          await sendMessage(
-            `(auto) Here ${atts.length > 1 ? 'are' : 'is'} the image output${atts.length > 1 ? 's' : ''} you requested from cell ${seenCells.join(', ')}. Continue.`,
-            atts,
-            depth + 1
-          );
+        for (const req of viewOutputRequests) {
+          const out = getCellTextOutput(tracker, req.index, lastRunZeroIdx);
+          if (!out) continue;
+          outputBlocks.push(`[cell ${out.cellIdx + 1} output]\n${out.text}\n[/cell ${out.cellIdx + 1} output]`);
+          seenOutputCells.push(out.cellIdx + 1);
+        }
+
+        if (atts.length || outputBlocks.length) {
+          const segments: string[] = [];
+          if (atts.length) {
+            segments.push(`Image output${atts.length > 1 ? 's' : ''} from cell ${seenImageCells.join(', ')} attached.`);
+          }
+          if (outputBlocks.length) {
+            segments.push(`Full output${outputBlocks.length > 1 ? 's' : ''} for cell ${seenOutputCells.join(', ')}:\n\n${outputBlocks.join('\n\n')}`);
+          }
+          segments.push('Continue.');
+          await sendMessage(`${AUTO_PREFIX}${segments.join('\n\n')}`, atts, depth + 1);
         } else {
-          addStatus('⚠ view-image: no image output found');
+          addStatus('⚠ view request: no matching output found');
         }
+      } else if (wantsContinue && canAutoChain) {
+        // The assistant explicitly opted in to another turn. Fresh notebook
+        // context is rebuilt by getContext() on the next send, so outputs
+        // from the actions we just ran will be visible.
+        await sendMessage(
+          `${AUTO_PREFIX}Notebook state updated. Review outputs and decide: continue with more actions, or reply without any action fences to stop.`,
+          [],
+          depth + 1
+        );
+      }
+
+      // Drain one queued user message per send cycle. Only the top-level
+      // call (depth 0) touches the queue — view-image follow-ups pass
+      // through without consuming queued input.
+      if (depth === 0 && queueRef.current.length > 0) {
+        const next = queueRef.current.shift()!;
+        setQueuedCount(queueRef.current.length);
+        // Fire-and-forget: this call will flip sending back on and run the
+        // same cycle again, draining one more if more arrived in the meantime.
+        void sendMessage(next.text, next.attachments);
       }
     },
     [sending, tracker, selectedModel, webSearch, settings, addStatus, refreshFromServer, autosave]
@@ -392,6 +496,7 @@ export function useChat(opts: UseChatOpts) {
     attachments,
     setAttachments,
     sending,
+    queuedCount,
     sendMessage,
     abort,
     fixLastError,
