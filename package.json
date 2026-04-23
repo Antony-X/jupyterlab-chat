@@ -1,14 +1,27 @@
 {
   "name": "jupyterlab-chat",
-  "version": "0.2.0",
-  "description": "Chat with LLMs in JupyterLab — React + shadcn/ui + prompt-kit floating panel",
+  "version": "0.3.0",
+  "description": "Chat with LLMs in JupyterLab — React + shadcn/ui floating panel with direct notebook read/write",
   "keywords": [
     "jupyter",
     "jupyterlab",
-    "jupyterlab-extension"
+    "jupyterlab-extension",
+    "llm",
+    "openrouter",
+    "claude",
+    "gpt",
+    "copilot"
   ],
   "license": "MIT",
   "author": "Antony",
+  "homepage": "https://github.com/Antony-X/jupyterlab-chat",
+  "bugs": {
+    "url": "https://github.com/Antony-X/jupyterlab-chat/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Antony-X/jupyterlab-chat.git"
+  },
   "files": [
     "lib/**/*.{d.ts,eot,gif,html,jpg,js,js.map,json,png,svg,woff2,ttf}",
     "style/**/*.{css,js}"

@@ -16,8 +16,8 @@ import {
   userText,
 } from '../lib/notebook';
 
-export { AUTO_PREFIX } from '../lib/constants';
 import { AUTO_PREFIX } from '../lib/constants';
+export { AUTO_PREFIX };
 
 export type DisplayKind = 'user' | 'assistant' | 'status' | 'error' | 'stopped';
 
