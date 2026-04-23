@@ -43,10 +43,20 @@ export interface SessionSummary {
   count: number;
 }
 
+export interface UsageInfo {
+  prompt_tokens?: number;
+  completion_tokens?: number;
+  total_tokens?: number;
+  // Dollar cost reported by OpenRouter for providers that expose it.
+  // Undefined when the provider didn't supply it — fall back to token counts.
+  cost?: number;
+}
+
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: any;
   reasoning?: string;
+  usage?: UsageInfo;
 }
 
 export async function chatSync(
@@ -88,8 +98,9 @@ export async function chatStream(
   onToken: (full: string) => void,
   webSearch = false,
   thinking = false,
-  onReasoning?: (full: string) => void
-): Promise<{ content: string; reasoning: string }> {
+  onReasoning?: (full: string) => void,
+  onUsage?: (u: UsageInfo) => void
+): Promise<{ content: string; reasoning: string; usage?: UsageInfo }> {
   const url = URLExt.join(s.baseUrl, 'api/chat/stream');
   const hdrs: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -122,6 +133,7 @@ export async function chatStream(
   let full = '';
   let fullReasoning = '';
   let sseBuf = '';
+  let usage: UsageInfo | undefined;
 
   while (true) {
     const { done, value } = await reader.read();
@@ -145,13 +157,17 @@ export async function chatStream(
           full += obj.token;
           onToken(full);
         }
+        if (obj.usage && typeof obj.usage === 'object') {
+          usage = obj.usage as UsageInfo;
+          onUsage?.(usage);
+        }
       } catch (e) {
         if (e instanceof SyntaxError) continue;
         throw e;
       }
     }
   }
-  return { content: full, reasoning: fullReasoning };
+  return { content: full, reasoning: fullReasoning, usage };
 }
 
 export async function getHistory(s: ServerConnection.ISettings): Promise<ChatMessage[]> {

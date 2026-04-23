@@ -89,9 +89,11 @@ export function App({ settings, tracker, openSignal }: AppProps) {
   };
 
   const handleSave = async () => {
-    const title = window.prompt('Chat name:', '') ?? undefined;
-    if (title === undefined) return;
-    await chat.saveChat(title);
+    // No prompt: the backend generates a title via a cheap LLM for new
+    // sessions that arrive without one. Existing session titles are
+    // preserved untouched.
+    setMenuOpen(false);
+    await chat.saveChat();
   };
 
   const handleLoad = async () => {
@@ -179,6 +181,7 @@ export function App({ settings, tracker, openSignal }: AppProps) {
             <ChatInput
               sending={chat.sending}
               queuedCount={chat.queuedCount}
+              sessionUsage={chat.sessionUsage}
               attachments={chat.attachments}
               onAttach={(atts) => chat.setAttachments((prev) => [...prev, ...atts])}
               onRemoveAttachment={(i) =>

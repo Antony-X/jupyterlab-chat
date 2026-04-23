@@ -3,7 +3,50 @@ import ReactMarkdown, { type Components } from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import remarkMath from 'remark-math';
 import rehypeKatex from 'rehype-katex';
+import { Copy, Check } from 'lucide-react';
 import { cn } from './utils';
+
+// Pull the raw text out of whatever react-markdown hands us inside a <code>
+// child. Simple fenced blocks yield a plain string; some renderers return a
+// single-element array, so normalize both. Used to populate clipboard from
+// the copy-block button without round-tripping through the DOM.
+function extractCodeText(node: React.ReactNode): string {
+  if (typeof node === 'string') return node;
+  if (Array.isArray(node)) return node.map(extractCodeText).join('');
+  if (React.isValidElement(node)) {
+    const children = (node.props as { children?: React.ReactNode })?.children;
+    if (children !== undefined) return extractCodeText(children);
+  }
+  return '';
+}
+
+function CopyCodeButton({ text }: { text: string }) {
+  const [copied, setCopied] = React.useState(false);
+  const copy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1200);
+    } catch {
+      /* clipboard blocked — silent no-op */
+    }
+  };
+  return (
+    <button
+      type="button"
+      onClick={copy}
+      className={cn(
+        'absolute top-1.5 right-1.5 z-10 p-1 rounded',
+        'bg-code-bg/80 text-code-fg/60 hover:text-code-fg',
+        'opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity'
+      )}
+      title={copied ? 'Copied' : 'Copy code'}
+    >
+      {copied ? <Check size={11} /> : <Copy size={11} />}
+    </button>
+  );
+}
 
 const KATEX_CDN = 'https://cdn.jsdelivr.net/npm/katex@0.16.11/dist/katex.min.css';
 
@@ -52,13 +95,14 @@ const components: Components = {
   pre({ children, ...rest }) {
     const firstChild = React.Children.toArray(children)[0] as React.ReactElement<{
       className?: string;
+      children?: React.ReactNode;
     }> | undefined;
     const className = firstChild?.props?.className ?? '';
     const match = /language-([\w-]+)(?::(\d+))?/.exec(className);
     const meta = match ? badgeForTag(match[1].toLowerCase(), match[2]) : null;
 
     const baseClasses =
-      'relative my-2.5 overflow-x-auto rounded-md bg-code-bg text-code-fg p-3.5 text-xs leading-relaxed border-l-2 border-muted shadow-[0_2px_10px_-4px_rgba(31,27,22,.3)] font-mono';
+      'group relative my-2.5 overflow-x-auto rounded-md bg-code-bg text-code-fg p-3.5 text-xs leading-relaxed border-l-2 border-muted shadow-[0_2px_10px_-4px_rgba(31,27,22,.3)] font-mono';
 
     // Delete has no body by design — rendering it as a full code block
     // gives you an empty black rectangle with just a badge on top. Show a
@@ -71,9 +115,12 @@ const components: Components = {
       );
     }
 
+    const codeText = extractCodeText(firstChild?.props?.children);
+
     if (!meta) {
       return (
         <pre className={baseClasses} {...rest}>
+          {codeText && <CopyCodeButton text={codeText} />}
           {children}
         </pre>
       );
@@ -83,6 +130,7 @@ const components: Components = {
         className={cn(baseClasses, 'jc-action-pre')}
         {...rest}
       >
+        {codeText && <CopyCodeButton text={codeText} />}
         {children}
         <span className="jc-action-badge">{meta.label}</span>
       </pre>

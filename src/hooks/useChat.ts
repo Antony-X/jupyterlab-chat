@@ -1,6 +1,6 @@
 import { INotebookTracker } from '@jupyterlab/notebook';
 import { ServerConnection } from '@jupyterlab/services';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import * as api from '../lib/api';
 import { extractCellActions } from '../lib/cell-actions';
 import {
@@ -32,6 +32,9 @@ export interface DisplayMsg {
   // "Thinking" section in the message bubble. Only populated when the user
   // enabled the thinking toggle for the request that produced it.
   reasoning?: string;
+  // Prompt / completion token counts and (when available) dollar cost,
+  // reported by OpenRouter in the final chunk of the stream.
+  usage?: api.UsageInfo;
 }
 
 let uidCounter = 0;
@@ -101,6 +104,7 @@ export function useChat(opts: UseChatOpts) {
           content: m.content,
           serverIdx: i,
           reasoning: m.reasoning || undefined,
+          usage: m.usage,
         });
       }
     });
@@ -295,6 +299,7 @@ export function useChat(opts: UseChatOpts) {
       let aborted = false;
 
       let fullReasoning = '';
+      let fullUsage: api.UsageInfo | undefined;
       try {
         const res = await api.chatStream(
           content,
@@ -318,14 +323,24 @@ export function useChat(opts: UseChatOpts) {
                 m.id === assistantId ? { ...m, reasoning, pending: true } : m
               )
             );
+          },
+          u => {
+            fullUsage = u;
           }
         );
         fullText = res.content;
         fullReasoning = res.reasoning;
+        fullUsage = res.usage ?? fullUsage;
         setMessages(prev =>
           prev.map(m =>
             m.id === assistantId
-              ? { ...m, content: fullText, reasoning: fullReasoning || undefined, pending: false }
+              ? {
+                  ...m,
+                  content: fullText,
+                  reasoning: fullReasoning || undefined,
+                  usage: fullUsage,
+                  pending: false,
+                }
               : m
           )
         );
@@ -574,6 +589,31 @@ export function useChat(opts: UseChatOpts) {
 
   const isAutoFixRunning = useCallback(() => autoFixRunning.current, []);
 
+  // Rolling totals across the visible conversation. Re-computed on any
+  // message change — cheap even for long chats since it's just a sum.
+  const sessionUsage = useMemo(() => {
+    let promptTokens = 0;
+    let completionTokens = 0;
+    let cost = 0;
+    let costKnown = false;
+    for (const m of messages) {
+      const u = m.usage;
+      if (!u) continue;
+      promptTokens += u.prompt_tokens ?? 0;
+      completionTokens += u.completion_tokens ?? 0;
+      if (typeof u.cost === 'number') {
+        cost += u.cost;
+        costKnown = true;
+      }
+    }
+    return {
+      promptTokens,
+      completionTokens,
+      totalTokens: promptTokens + completionTokens,
+      cost: costKnown ? cost : undefined,
+    };
+  }, [messages]);
+
   return {
     messages,
     sessions,
@@ -588,6 +628,7 @@ export function useChat(opts: UseChatOpts) {
     setAttachments,
     sending,
     queuedCount,
+    sessionUsage,
     sendMessage,
     abort,
     fixLastError,

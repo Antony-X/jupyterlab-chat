@@ -12,10 +12,18 @@ import { cn } from '../../lib/utils';
 // stay inline but stack traces / file dumps get stashed as attachments.
 const LARGE_TEXT_PASTE_THRESHOLD = 3000;
 
+interface SessionUsage {
+  promptTokens: number;
+  completionTokens: number;
+  totalTokens: number;
+  cost?: number;
+}
+
 interface Props {
   sending: boolean;
   queuedCount: number;
   attachments: Attachment[];
+  sessionUsage: SessionUsage;
   onAttach: (files: Attachment[]) => void;
   onRemoveAttachment: (idx: number) => void;
   onSend: (text: string) => void;
@@ -23,10 +31,17 @@ interface Props {
   onFix: () => void;
 }
 
+function fmtTokens(n: number): string {
+  if (n < 1000) return String(n);
+  if (n < 10_000) return `${(n / 1000).toFixed(1)}k`;
+  return `${Math.round(n / 1000)}k`;
+}
+
 export function ChatInput({
   sending,
   queuedCount,
   attachments,
+  sessionUsage,
   onAttach,
   onRemoveAttachment,
   onSend,
@@ -172,6 +187,22 @@ export function ChatInput({
             }}
           />
           <div className="flex-1" />
+          {sessionUsage.totalTokens > 0 && (
+            <span
+              className="text-[11px] text-muted font-mono px-1.5 tabular-nums"
+              title={
+                `Session total: ${sessionUsage.promptTokens} prompt + ` +
+                `${sessionUsage.completionTokens} completion` +
+                (sessionUsage.cost !== undefined
+                  ? ` · $${sessionUsage.cost.toFixed(4)}`
+                  : '')
+              }
+            >
+              {fmtTokens(sessionUsage.totalTokens)} tok
+              {sessionUsage.cost !== undefined &&
+                ` · $${sessionUsage.cost.toFixed(sessionUsage.cost < 0.01 ? 4 : 3)}`}
+            </span>
+          )}
           {queuedCount > 0 && (
             <span
               className="text-[11px] text-muted px-1.5"

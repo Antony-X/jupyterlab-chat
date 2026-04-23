@@ -74,6 +74,7 @@ export function MessagesList({ messages, empty, onEdit, onDelete }: Props) {
               key={m.id}
               text={typeof m.content === 'string' ? m.content : ''}
               reasoning={m.reasoning}
+              usage={m.usage}
               pending={m.pending}
             />
           );

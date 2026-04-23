@@ -259,6 +259,63 @@ def _auto_title(history: list) -> str:
     return datetime.now().strftime("Chat %Y-%m-%d %H:%M")
 
 
+# Slug + pricing cheap enough that we're happy to burn a call on titling.
+# Falls back to _auto_title on any error, so a bad model here never breaks save.
+_TITLE_MODEL = "anthropic/claude-haiku-4.5"
+
+
+async def _generate_title_via_llm(hist: list, key: str) -> str:
+    """Ask a cheap model for a 3-6 word title summarizing the chat so far.
+
+    Only looks at the first few messages — titling is about the *topic* of
+    the conversation, and the opening exchange is almost always where that
+    signal lives. Skips tool/side-channel fences the assistant emitted so
+    the title isn't "ran new cell 7".
+    """
+    if not key:
+        return _auto_title(hist)
+    try:
+        seed = _strip_reasoning(hist)[:4]
+        seed_msgs = []
+        for m in seed:
+            c = m.get("content", "")
+            if isinstance(c, list):
+                parts = [p.get("text", "") for p in c if p.get("type") == "text"]
+                c = "\n".join(p for p in parts if p)
+            seed_msgs.append({"role": m.get("role", "user"), "content": str(c)[:2000]})
+        ask = {
+            "role": "user",
+            "content": (
+                "Write a concise 3-6 word title for this conversation. "
+                "Output ONLY the title — no quotes, no period, no prefix."
+            ),
+        }
+        req = {
+            "model": _TITLE_MODEL,
+            "messages": seed_msgs + [ask],
+            "max_tokens": 30,
+        }
+        resp = await tornado.httpclient.AsyncHTTPClient().fetch(
+            tornado.httpclient.HTTPRequest(
+                "https://openrouter.ai/api/v1/chat/completions",
+                method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {key}",
+                },
+                body=json.dumps(req),
+                request_timeout=20,
+            )
+        )
+        raw = json.loads(resp.body)["choices"][0]["message"].get("content", "").strip()
+        raw = raw.strip("\"'").rstrip(".").strip()
+        if 1 <= len(raw) <= 80:
+            return raw
+    except Exception:
+        pass
+    return _auto_title(hist)
+
+
 class ChatState:
     # Per-client histories keyed on a UUID the frontend picks at mount.
     # OrderedDict so we can do LRU eviction: every read/write move_to_end's
@@ -343,17 +400,17 @@ def _reasoning_param(thinking) -> dict | None:
     return {"effort": "medium"}
 
 
-def _strip_reasoning(msgs: list) -> list:
-    """Return a copy of `msgs` with any per-message `reasoning` field removed.
+# Fields we persist per assistant turn for the UI (reasoning trace, usage
+# stats) that must NOT be round-tripped back to the provider — they're not
+# part of the OpenAI-compatible request schema.
+_CLIENT_ONLY_FIELDS = ("reasoning", "usage")
 
-    We persist reasoning alongside each assistant turn so the frontend can
-    re-render the Thinking dropdown after a session reload, but the provider
-    API shouldn't see the extra field — strip before we forward.
-    """
+
+def _strip_reasoning(msgs: list) -> list:
     out = []
     for m in msgs:
-        if isinstance(m, dict) and "reasoning" in m:
-            m = {k: v for k, v in m.items() if k != "reasoning"}
+        if isinstance(m, dict) and any(k in m for k in _CLIENT_ONLY_FIELDS):
+            m = {k: v for k, v in m.items() if k not in _CLIENT_ONLY_FIELDS}
         out.append(m)
     return out
 
@@ -398,14 +455,20 @@ class ChatHandler(APIHandler):
                     request_timeout=120,
                 )
             )
-            msg = json.loads(resp.body)["choices"][0]["message"]
+            data = json.loads(resp.body)
+            msg = data["choices"][0]["message"]
             text = msg.get("content", "")
             rtext = msg.get("reasoning", "")
+            usage = data.get("usage") if isinstance(data.get("usage"), dict) else None
             stored = {"role": "assistant", "content": text}
             if rtext:
                 stored["reasoning"] = rtext
+            if usage:
+                stored["usage"] = usage
             hist.append(stored)
-            self.finish(json.dumps({"response": text, "reasoning": rtext}))
+            self.finish(
+                json.dumps({"response": text, "reasoning": rtext, "usage": usage})
+            )
         except Exception as e:
             if hist and hist[-1]["role"] == "user":
                 hist.pop()
@@ -446,6 +509,7 @@ class ChatStreamHandler(APIHandler):
 
         tokens: list[str] = []
         reasoning_tokens: list[str] = []
+        usage_box: list[dict] = []
         buf = [""]  # mutable container for closure
         closed = [False]
 
@@ -463,7 +527,23 @@ class ChatStreamHandler(APIHandler):
                     return
                 try:
                     obj = json.loads(payload)
-                    delta = obj["choices"][0]["delta"]
+                    # OpenRouter's final chunk carries usage (prompt/completion
+                    # tokens, and for many providers a dollar `cost` field).
+                    # Capture it and forward to the client as a dedicated event
+                    # so the UI can show per-message + session-total cost.
+                    u = obj.get("usage")
+                    if isinstance(u, dict):
+                        usage_box.append(u)
+                        try:
+                            self.write(f"data: {json.dumps({'usage': u})}\n\n")
+                            self.flush()
+                        except Exception:
+                            closed[0] = True
+                            return
+                    choices = obj.get("choices") or []
+                    if not choices:
+                        continue
+                    delta = choices[0].get("delta") or {}
                     rtok = delta.get("reasoning", "")
                     if rtok:
                         reasoning_tokens.append(rtok)
@@ -486,7 +566,12 @@ class ChatStreamHandler(APIHandler):
                 except (json.JSONDecodeError, KeyError, IndexError):
                     pass
 
-        req_body: dict = {"model": model, "messages": msgs, "stream": True}
+        req_body: dict = {
+            "model": model,
+            "messages": msgs,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
         if reasoning:
             req_body["reasoning"] = reasoning
 
@@ -514,10 +599,13 @@ class ChatStreamHandler(APIHandler):
 
         full = "".join(tokens)
         full_reasoning = "".join(reasoning_tokens)
+        final_usage = usage_box[-1] if usage_box else None
         if full:
             stored = {"role": "assistant", "content": full}
             if full_reasoning:
                 stored["reasoning"] = full_reasoning
+            if final_usage:
+                stored["usage"] = final_usage
             hist.append(stored)
         elif hist and hist[-1]["role"] == "user":
             hist.pop()
@@ -606,10 +694,11 @@ class ChatSessionHandler(APIHandler):
             self.finish(json.dumps({"sessions": out}))
 
     @tornado.web.authenticated
-    def post(self):
+    async def post(self):
         """Create or update a session.
         If `id` is provided and exists, update it (preserves original date/title).
-        Otherwise create a new one.
+        Otherwise create a new one — titled by the LLM when the caller didn't
+        supply one, falling back to the first-message truncation heuristic.
         """
         body = json.loads(self.request.body)
         cid = body.get("client_id") or "default"
@@ -628,12 +717,16 @@ class ChatSessionHandler(APIHandler):
                 except Exception:
                     existing = None
 
+        user_title = body.get("title") or ""
         if not existing:
             sid = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:-3]
-            title = body.get("title") or _auto_title(hist)
+            if user_title:
+                title = user_title
+            else:
+                title = await _generate_title_via_llm(hist, ChatState.api_key())
             date = datetime.now().isoformat()
         else:
-            title = body.get("title") or existing.get("title") or _auto_title(hist)
+            title = user_title or existing.get("title") or _auto_title(hist)
             date = existing.get("date") or datetime.now().isoformat()
 
         Path(d, f"{sid}.json").write_text(
