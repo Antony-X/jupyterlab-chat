@@ -328,6 +328,36 @@ def _apply_web_search(model: str, web_search: bool) -> str:
     return model
 
 
+def _reasoning_param(thinking) -> dict | None:
+    """Build OpenRouter's unified `reasoning` request param.
+
+    Accepts either a boolean (→ medium effort) or a dict the caller
+    forwards verbatim (e.g. {"effort": "high"} or {"max_tokens": 4000}).
+    Returns None when thinking is disabled so we don't send the field
+    to providers that would reject it.
+    """
+    if not thinking:
+        return None
+    if isinstance(thinking, dict):
+        return thinking
+    return {"effort": "medium"}
+
+
+def _strip_reasoning(msgs: list) -> list:
+    """Return a copy of `msgs` with any per-message `reasoning` field removed.
+
+    We persist reasoning alongside each assistant turn so the frontend can
+    re-render the Thinking dropdown after a session reload, but the provider
+    API shouldn't see the extra field — strip before we forward.
+    """
+    out = []
+    for m in msgs:
+        if isinstance(m, dict) and "reasoning" in m:
+            m = {k: v for k, v in m.items() if k != "reasoning"}
+        out.append(m)
+    return out
+
+
 class ChatHandler(APIHandler):
     @tornado.web.authenticated
     async def post(self):
@@ -338,6 +368,7 @@ class ChatHandler(APIHandler):
         model = body.get("model", "anthropic/claude-sonnet-4.6")
         web_search = bool(body.get("web_search", False))
         model = _apply_web_search(model, web_search)
+        reasoning = _reasoning_param(body.get("thinking", False))
 
         hist = ChatState.history(client_id)
         hist.append({"role": "user", "content": content})
@@ -347,7 +378,12 @@ class ChatHandler(APIHandler):
             return self.finish(json.dumps({"error": "No OPENROUTER_API_KEY"}))
 
         sys = SYSTEM_PROMPT + (f"\n\nCurrent notebook:\n{ctx}" if ctx else "")
-        msgs = [{"role": "system", "content": sys}] + _trim_for_request(hist)
+        msgs = [{"role": "system", "content": sys}] + _strip_reasoning(
+            _trim_for_request(hist)
+        )
+        req_body: dict = {"model": model, "messages": msgs}
+        if reasoning:
+            req_body["reasoning"] = reasoning
 
         try:
             resp = await tornado.httpclient.AsyncHTTPClient().fetch(
@@ -358,13 +394,18 @@ class ChatHandler(APIHandler):
                         "Content-Type": "application/json",
                         "Authorization": f"Bearer {key}",
                     },
-                    body=json.dumps({"model": model, "messages": msgs}),
+                    body=json.dumps(req_body),
                     request_timeout=120,
                 )
             )
-            text = json.loads(resp.body)["choices"][0]["message"]["content"]
-            hist.append({"role": "assistant", "content": text})
-            self.finish(json.dumps({"response": text}))
+            msg = json.loads(resp.body)["choices"][0]["message"]
+            text = msg.get("content", "")
+            rtext = msg.get("reasoning", "")
+            stored = {"role": "assistant", "content": text}
+            if rtext:
+                stored["reasoning"] = rtext
+            hist.append(stored)
+            self.finish(json.dumps({"response": text, "reasoning": rtext}))
         except Exception as e:
             if hist and hist[-1]["role"] == "user":
                 hist.pop()
@@ -385,6 +426,7 @@ class ChatStreamHandler(APIHandler):
         model = body.get("model", "anthropic/claude-sonnet-4.6")
         web_search = bool(body.get("web_search", False))
         model = _apply_web_search(model, web_search)
+        reasoning = _reasoning_param(body.get("thinking", False))
 
         hist = ChatState.history(client_id)
         hist.append({"role": "user", "content": content})
@@ -394,13 +436,16 @@ class ChatStreamHandler(APIHandler):
             return self.finish(json.dumps({"error": "No OPENROUTER_API_KEY"}))
 
         sys_msg = SYSTEM_PROMPT + (f"\n\nCurrent notebook:\n{ctx}" if ctx else "")
-        msgs = [{"role": "system", "content": sys_msg}] + _trim_for_request(hist)
+        msgs = [{"role": "system", "content": sys_msg}] + _strip_reasoning(
+            _trim_for_request(hist)
+        )
 
         self.set_header("Content-Type", "text/event-stream")
         self.set_header("Cache-Control", "no-cache")
         self.set_header("X-Accel-Buffering", "no")
 
         tokens: list[str] = []
+        reasoning_tokens: list[str] = []
         buf = [""]  # mutable container for closure
         closed = [False]
 
@@ -418,7 +463,19 @@ class ChatStreamHandler(APIHandler):
                     return
                 try:
                     obj = json.loads(payload)
-                    tok = obj["choices"][0]["delta"].get("content", "")
+                    delta = obj["choices"][0]["delta"]
+                    rtok = delta.get("reasoning", "")
+                    if rtok:
+                        reasoning_tokens.append(rtok)
+                        try:
+                            self.write(
+                                f"data: {json.dumps({'reasoning': rtok})}\n\n"
+                            )
+                            self.flush()
+                        except Exception:
+                            closed[0] = True
+                            return
+                    tok = delta.get("content", "")
                     if tok:
                         tokens.append(tok)
                         try:
@@ -429,6 +486,10 @@ class ChatStreamHandler(APIHandler):
                 except (json.JSONDecodeError, KeyError, IndexError):
                     pass
 
+        req_body: dict = {"model": model, "messages": msgs, "stream": True}
+        if reasoning:
+            req_body["reasoning"] = reasoning
+
         try:
             await tornado.httpclient.AsyncHTTPClient().fetch(
                 tornado.httpclient.HTTPRequest(
@@ -438,9 +499,7 @@ class ChatStreamHandler(APIHandler):
                         "Content-Type": "application/json",
                         "Authorization": f"Bearer {key}",
                     },
-                    body=json.dumps(
-                        {"model": model, "messages": msgs, "stream": True}
-                    ),
+                    body=json.dumps(req_body),
                     streaming_callback=on_chunk,
                     request_timeout=120,
                 )
@@ -454,8 +513,12 @@ class ChatStreamHandler(APIHandler):
                     pass
 
         full = "".join(tokens)
+        full_reasoning = "".join(reasoning_tokens)
         if full:
-            hist.append({"role": "assistant", "content": full})
+            stored = {"role": "assistant", "content": full}
+            if full_reasoning:
+                stored["reasoning"] = full_reasoning
+            hist.append(stored)
         elif hist and hist[-1]["role"] == "user":
             hist.pop()
 

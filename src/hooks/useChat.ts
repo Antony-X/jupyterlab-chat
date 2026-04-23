@@ -28,6 +28,10 @@ export interface DisplayMsg {
   serverIdx?: number;
   originalText?: string;
   pending?: boolean;
+  // Full reasoning text for an assistant turn, rendered as a collapsible
+  // "Thinking" section in the message bubble. Only populated when the user
+  // enabled the thinking toggle for the request that produced it.
+  reasoning?: string;
 }
 
 let uidCounter = 0;
@@ -51,14 +55,17 @@ export function useChat(opts: UseChatOpts) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState(opts.initialModel);
   const [webSearch, setWebSearch] = useState(false);
-  // Refs mirror the latest model/web-search so that a sendMessage closure
-  // created on a past render (still running when the user drains the queue
-  // or when auto-chain follow-ups fire) picks up the current selection
-  // instead of the stale render's value.
+  const [thinking, setThinking] = useState(false);
+  // Refs mirror the latest model / web-search / thinking so that a
+  // sendMessage closure created on a past render (still running when the
+  // user drains the queue or when auto-chain follow-ups fire) picks up the
+  // current selection instead of the stale render's value.
   const selectedModelRef = useRef(selectedModel);
   const webSearchRef = useRef(webSearch);
+  const thinkingRef = useRef(thinking);
   useEffect(() => { selectedModelRef.current = selectedModel; }, [selectedModel]);
   useEffect(() => { webSearchRef.current = webSearch; }, [webSearch]);
+  useEffect(() => { thinkingRef.current = thinking; }, [thinking]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [sending, setSending] = useState(false);
   // Queue for messages typed while a response is still streaming. We drain
@@ -88,7 +95,13 @@ export function useChat(opts: UseChatOpts) {
           originalText: userText(m.content),
         });
       } else {
-        out.push({ id: uid(), kind: 'assistant', content: m.content, serverIdx: i });
+        out.push({
+          id: uid(),
+          kind: 'assistant',
+          content: m.content,
+          serverIdx: i,
+          reasoning: m.reasoning || undefined,
+        });
       }
     });
     return out;
@@ -281,8 +294,9 @@ export function useChat(opts: UseChatOpts) {
       let fullText = '';
       let aborted = false;
 
+      let fullReasoning = '';
       try {
-        fullText = await api.chatStream(
+        const res = await api.chatStream(
           content,
           ctx,
           selectedModelRef.current,
@@ -295,11 +309,24 @@ export function useChat(opts: UseChatOpts) {
               )
             );
           },
-          webSearchRef.current
+          webSearchRef.current,
+          thinkingRef.current,
+          reasoning => {
+            fullReasoning = reasoning;
+            setMessages(prev =>
+              prev.map(m =>
+                m.id === assistantId ? { ...m, reasoning, pending: true } : m
+              )
+            );
+          }
         );
+        fullText = res.content;
+        fullReasoning = res.reasoning;
         setMessages(prev =>
           prev.map(m =>
-            m.id === assistantId ? { ...m, content: fullText, pending: false } : m
+            m.id === assistantId
+              ? { ...m, content: fullText, reasoning: fullReasoning || undefined, pending: false }
+              : m
           )
         );
       } catch (e: any) {
@@ -555,6 +582,8 @@ export function useChat(opts: UseChatOpts) {
     setSelectedModel,
     webSearch,
     setWebSearch,
+    thinking,
+    setThinking,
     attachments,
     setAttachments,
     sending,

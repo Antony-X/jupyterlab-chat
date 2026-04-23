@@ -73,6 +73,7 @@ export function MessagesList({ messages, empty, onEdit, onDelete }: Props) {
             <AssistantMessage
               key={m.id}
               text={typeof m.content === 'string' ? m.content : ''}
+              reasoning={m.reasoning}
               pending={m.pending}
             />
           );

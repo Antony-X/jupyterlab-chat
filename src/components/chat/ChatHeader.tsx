@@ -1,5 +1,5 @@
 import * as React from 'react';
-import { Plus, History, Moon, Sun, MoreVertical, X, Globe } from 'lucide-react';
+import { Plus, History, Moon, Sun, MoreVertical, X, Globe, Brain } from 'lucide-react';
 import { NativeSelect } from '../ui/select';
 import { Button } from '../ui/button';
 import { MODELS } from '../../constants';
@@ -11,6 +11,8 @@ interface Props {
   onModelChange: (id: string) => void;
   webSearch: boolean;
   onToggleWebSearch: () => void;
+  thinking: boolean;
+  onToggleThinking: () => void;
   onToggleTheme: () => void;
   onNew: () => void;
   onToggleSessions: () => void;
@@ -25,6 +27,8 @@ export function ChatHeader({
   onModelChange,
   webSearch,
   onToggleWebSearch,
+  thinking,
+  onToggleThinking,
   onToggleTheme,
   onNew,
   onToggleSessions,
@@ -55,6 +59,15 @@ export function ChatHeader({
       <div className="font-serif font-semibold tracking-tight text-sm ml-1 flex-1 truncate">
         Chat
       </div>
+      <Button
+        variant="header-icon"
+        size="icon"
+        onClick={onToggleThinking}
+        title={thinking ? 'Thinking: on' : 'Thinking: off (show reasoning traces)'}
+        className={cn(thinking && 'text-brand bg-white/10')}
+      >
+        <Brain size={14} />
+      </Button>
       <Button
         variant="header-icon"
         size="icon"

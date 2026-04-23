@@ -404,7 +404,7 @@ export async function autoFix(
       const ctx = getContext(tracker);
       let fix = '';
       try {
-        fix = await chatStream(
+        const res = await chatStream(
           `${AUTO_PREFIX}Code errored:\n\`\`\`\n${r.error}\n\`\`\`\nProvide ONLY fixed code in one \`\`\`python-run block.`,
           ctx,
           model,
@@ -412,6 +412,7 @@ export async function autoFix(
           signal ?? new AbortController().signal,
           () => { /* discard tokens — autoFix only needs the final text */ }
         );
+        fix = res.content;
       } catch (e: any) {
         if (e?.name === 'AbortError') return;
         throw e;

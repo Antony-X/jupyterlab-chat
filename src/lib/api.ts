@@ -46,6 +46,7 @@ export interface SessionSummary {
 export interface ChatMessage {
   role: 'user' | 'assistant' | 'system';
   content: any;
+  reasoning?: string;
 }
 
 export async function chatSync(
@@ -53,7 +54,8 @@ export async function chatSync(
   ctx: string,
   model: string,
   s: ServerConnection.ISettings,
-  webSearch = false
+  webSearch = false,
+  thinking = false
 ): Promise<string> {
   const url = URLExt.join(s.baseUrl, 'api/chat/message');
   const r = await ServerConnection.makeRequest(
@@ -61,7 +63,13 @@ export async function chatSync(
     {
       method: 'POST',
       body: JSON.stringify(
-        withClientId({ content, context: ctx, model, web_search: webSearch })
+        withClientId({
+          content,
+          context: ctx,
+          model,
+          web_search: webSearch,
+          thinking,
+        })
       ),
     },
     s
@@ -78,8 +86,10 @@ export async function chatStream(
   s: ServerConnection.ISettings,
   signal: AbortSignal,
   onToken: (full: string) => void,
-  webSearch = false
-): Promise<string> {
+  webSearch = false,
+  thinking = false,
+  onReasoning?: (full: string) => void
+): Promise<{ content: string; reasoning: string }> {
   const url = URLExt.join(s.baseUrl, 'api/chat/stream');
   const hdrs: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -92,7 +102,13 @@ export async function chatStream(
     headers: hdrs,
     credentials: 'same-origin',
     body: JSON.stringify(
-      withClientId({ content, context: ctx, model, web_search: webSearch })
+      withClientId({
+        content,
+        context: ctx,
+        model,
+        web_search: webSearch,
+        thinking,
+      })
     ),
     signal,
   });
@@ -104,6 +120,7 @@ export async function chatStream(
   const reader = resp.body!.getReader();
   const dec = new TextDecoder();
   let full = '';
+  let fullReasoning = '';
   let sseBuf = '';
 
   while (true) {
@@ -120,6 +137,10 @@ export async function chatStream(
       try {
         const obj = JSON.parse(p);
         if (obj.error) throw new Error(obj.error);
+        if (obj.reasoning) {
+          fullReasoning += obj.reasoning;
+          onReasoning?.(fullReasoning);
+        }
         if (obj.token) {
           full += obj.token;
           onToken(full);
@@ -130,7 +151,7 @@ export async function chatStream(
       }
     }
   }
-  return full;
+  return { content: full, reasoning: fullReasoning };
 }
 
 export async function getHistory(s: ServerConnection.ISettings): Promise<ChatMessage[]> {
