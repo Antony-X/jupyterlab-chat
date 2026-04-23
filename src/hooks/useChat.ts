@@ -1,6 +1,6 @@
 import { INotebookTracker } from '@jupyterlab/notebook';
 import { ServerConnection } from '@jupyterlab/services';
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import * as api from '../lib/api';
 import { extractCellActions } from '../lib/cell-actions';
 import {
@@ -51,6 +51,14 @@ export function useChat(opts: UseChatOpts) {
   const [currentSessionId, setCurrentSessionId] = useState<string | null>(null);
   const [selectedModel, setSelectedModel] = useState(opts.initialModel);
   const [webSearch, setWebSearch] = useState(false);
+  // Refs mirror the latest model/web-search so that a sendMessage closure
+  // created on a past render (still running when the user drains the queue
+  // or when auto-chain follow-ups fire) picks up the current selection
+  // instead of the stale render's value.
+  const selectedModelRef = useRef(selectedModel);
+  const webSearchRef = useRef(webSearch);
+  useEffect(() => { selectedModelRef.current = selectedModel; }, [selectedModel]);
+  useEffect(() => { webSearchRef.current = webSearch; }, [webSearch]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [sending, setSending] = useState(false);
   // Queue for messages typed while a response is still streaming. We drain
@@ -130,6 +138,10 @@ export function useChat(opts: UseChatOpts) {
     setMessages([]);
     setAttachments([]);
     recentActionsRef.current = [];
+    // Drop anything queued from the prior session — otherwise an in-flight
+    // stream's drain would leak those messages into the fresh chat.
+    queueRef.current = [];
+    setQueuedCount(0);
   }, [settings]);
 
   const saveChat = useCallback(
@@ -159,6 +171,12 @@ export function useChat(opts: UseChatOpts) {
         );
         setCurrentSessionId(id);
         setMessages(historyToDisplay(srvMsgs));
+        // Drop queue + recent-action breadcrumbs so content from the old
+        // session can't leak into the one we just loaded (either via drain
+        // or via the context injected on the next send).
+        queueRef.current = [];
+        setQueuedCount(0);
+        recentActionsRef.current = [];
       } catch {
         /* ignore */
       }
@@ -232,6 +250,11 @@ export function useChat(opts: UseChatOpts) {
     async (rawText: string, rawAttachments: Attachment[], depth = 0) => {
       const text = rawText.trim();
       if (!text && !rawAttachments.length) return;
+      // Clear the visible input on any accepted user send (queue OR immediate)
+      // so a queued submit doesn't leave attachments in the tray that would
+      // then ride along on the NEXT user message. Auto-chained follow-ups
+      // (depth > 0) carry synthetic attachments and must not touch input state.
+      if (depth === 0) setAttachments([]);
       // Already streaming: queue and let the in-flight send drain it when
       // it finishes. depth>0 means this is an internal auto-chained call
       // (view-image follow-up) and must bypass the queue.
@@ -252,8 +275,6 @@ export function useChat(opts: UseChatOpts) {
         { id: assistantId, kind: 'assistant', content: 'Thinking…', pending: true },
       ]);
 
-      setAttachments([]);
-
       const ctrl = new AbortController();
       abortRef.current = ctrl;
       const ctx = getContext(tracker, recentActionsRef.current);
@@ -264,7 +285,7 @@ export function useChat(opts: UseChatOpts) {
         fullText = await api.chatStream(
           content,
           ctx,
-          selectedModel,
+          selectedModelRef.current,
           settings,
           ctrl.signal,
           full => {
@@ -274,7 +295,7 @@ export function useChat(opts: UseChatOpts) {
               )
             );
           },
-          webSearch
+          webSearchRef.current
         );
         setMessages(prev =>
           prev.map(m =>
@@ -284,6 +305,13 @@ export function useChat(opts: UseChatOpts) {
       } catch (e: any) {
         if (e?.name === 'AbortError') {
           aborted = true;
+          // Stop also cancels anything the user queued while this was
+          // streaming — otherwise queued messages would silently fire through
+          // the drain block below, defying Stop's contract.
+          if (queueRef.current.length > 0) {
+            queueRef.current = [];
+            setQueuedCount(0);
+          }
           if (fullText) {
             setMessages(prev =>
               prev.map(m =>
@@ -316,6 +344,12 @@ export function useChat(opts: UseChatOpts) {
       let viewOutputRequests: Array<{ index?: number }> = [];
       let wantsContinue = false;
       let lastRunZeroIdx: number | undefined;
+      // When a `run` action appends a cell, we stash its stable cell id so a
+      // structural op that fires afterward (the reverse-order loop means
+      // inserts/deletes may run AFTER the run) can't strand the index. We
+      // re-resolve by id at the end of the loop.
+      let runCellId: string | undefined;
+      let runActionLogIdx: number | undefined;
 
       const recordAction = (label: string) => {
         recentActionsRef.current.push(label);
@@ -353,7 +387,7 @@ export function useChat(opts: UseChatOpts) {
                 await autoFix(
                   tracker,
                   a.code,
-                  selectedModel,
+                  selectedModelRef.current,
                   settings,
                   addStatus,
                   v => {
@@ -361,18 +395,45 @@ export function useChat(opts: UseChatOpts) {
                   },
                   ctrl.signal
                 );
-                const newLast = tracker.currentWidget?.content.model
-                  ? tracker.currentWidget.content.model.cells.length - 1
-                  : undefined;
-                lastRunZeroIdx = newLast;
-                recordAction(newLast !== undefined ? `ran new cell ${newLast + 1}` : 'ran new cell');
+                const mdl = tracker.currentWidget?.content.model;
+                if (mdl) {
+                  const nbJson = mdl.toJSON() as any;
+                  const cs: any[] = nbJson.cells || [];
+                  if (cs.length > 0) {
+                    runCellId = cs[cs.length - 1].id;
+                    lastRunZeroIdx = cs.length - 1;
+                  } else {
+                    lastRunZeroIdx = undefined;
+                  }
+                }
+                recordAction(lastRunZeroIdx !== undefined ? `ran new cell ${lastRunZeroIdx + 1}` : 'ran new cell');
+                runActionLogIdx = recentActionsRef.current.length - 1;
               } else {
                 const r = await executeAction(tracker, a);
                 addStatus(
                   r.error ? `⚠ ${r.label}: ${r.error.split('\n')[0]}` : r.label
                 );
-                if (r.cellIdx >= 0) lastRunZeroIdx = r.cellIdx;
+                // Keep a structural-op fallback for bare view-image sequences
+                // that have no `run` — but the run cell's position (if any)
+                // is re-resolved by id after the loop and takes precedence.
+                if (r.cellIdx >= 0 && runCellId === undefined) lastRunZeroIdx = r.cellIdx;
                 recordAction(r.error ? `${r.label} — errored: ${r.error.split('\n')[0]}` : r.label);
+              }
+            }
+
+            // Re-resolve the run cell's current position by id. Subsequent
+            // structural ops in this loop may have shifted or removed it.
+            if (runCellId && tracker.currentWidget?.content.model) {
+              const nbJson = tracker.currentWidget.content.model.toJSON() as any;
+              const cs: any[] = nbJson.cells || [];
+              const found = cs.findIndex((c: any) => c.id === runCellId);
+              if (found >= 0) {
+                lastRunZeroIdx = found;
+                if (runActionLogIdx !== undefined) {
+                  recentActionsRef.current[runActionLogIdx] = `ran new cell ${found + 1}`;
+                }
+              } else {
+                lastRunZeroIdx = undefined;
               }
             }
           } finally {
@@ -449,8 +510,9 @@ export function useChat(opts: UseChatOpts) {
 
       // Drain one queued user message per send cycle. Only the top-level
       // call (depth 0) touches the queue — view-image follow-ups pass
-      // through without consuming queued input.
-      if (depth === 0 && queueRef.current.length > 0) {
+      // through without consuming queued input. Aborted sends skip this
+      // entirely (the abort branch also wiped the queue), so Stop is honored.
+      if (depth === 0 && !aborted && queueRef.current.length > 0) {
         const next = queueRef.current.shift()!;
         setQueuedCount(queueRef.current.length);
         // Fire-and-forget: this call will flip sending back on and run the
@@ -458,7 +520,7 @@ export function useChat(opts: UseChatOpts) {
         void sendMessage(next.text, next.attachments);
       }
     },
-    [sending, tracker, selectedModel, webSearch, settings, addStatus, refreshFromServer, autosave]
+    [sending, tracker, settings, addStatus, refreshFromServer, autosave]
   );
 
   const editAndRegen = useCallback(

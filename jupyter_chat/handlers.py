@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
@@ -7,6 +8,20 @@ from pathlib import Path
 import tornado.httpclient
 import tornado.web
 from jupyter_server.base.handlers import APIHandler
+
+# Session ids are generated as datetime.strftime("%Y%m%d_%H%M%S_%f")[:-3],
+# so the legitimate shape is strictly digits + underscore. Validating against
+# this before letting `sid` hit the filesystem blocks path traversal
+# ("../../etc/hosts") and absolute paths ("/etc/passwd") from escaping the
+# per-folder sandbox — `_chat_dir(folder)` already guards `folder` similarly
+# but leaves `sid` unprotected on its own.
+_SID_RE = re.compile(r"^[0-9_]{1,64}$")
+
+
+def _safe_sid(sid: str) -> str:
+    if not sid or not _SID_RE.match(sid):
+        raise tornado.web.HTTPError(400, "bad id")
+    return sid
 
 # Rolling window for what we actually send to the model. The full on-disk
 # history is untouched; only the OUTBOUND request is trimmed. Keeps latency
@@ -192,11 +207,15 @@ def _read_env_var(path: str, name: str) -> str:
                 if key.strip() != name:
                     continue
                 val = val.strip()
-                if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
-                    return val[1:-1]
+                # Strip trailing inline comments BEFORE unwrapping quotes —
+                # otherwise `KEY="sk" # note` leaves val[-1] as the comment's
+                # last char, the quote-match fails, and we return the literal
+                # `"sk"` (quotes and all) which breaks auth downstream.
                 hash_pos = val.find(" #")
                 if hash_pos >= 0:
                     val = val[:hash_pos].rstrip()
+                if len(val) >= 2 and val[0] == val[-1] and val[0] in ('"', "'"):
+                    return val[1:-1]
                 return val
     except OSError:
         pass
@@ -499,6 +518,7 @@ class ChatSessionHandler(APIHandler):
         folder = self.get_argument("folder", "")
         d = _chat_dir(folder)
         if sid:
+            sid = _safe_sid(sid)
             p = os.path.join(d, f"{sid}.json")
             if os.path.exists(p):
                 self.finish(Path(p).read_text())
@@ -532,6 +552,8 @@ class ChatSessionHandler(APIHandler):
         cid = body.get("client_id") or "default"
         hist = ChatState.history(cid)
         sid = body.get("id", "")
+        if sid:
+            sid = _safe_sid(sid)
         d = _chat_dir(body.get("folder", ""))
 
         existing = None
@@ -569,7 +591,7 @@ class ChatSessionHandler(APIHandler):
     def put(self):
         body = json.loads(self.request.body)
         cid = body.get("client_id") or "default"
-        sid = body.get("id", "")
+        sid = _safe_sid(body.get("id", ""))
         p = os.path.join(_chat_dir(body.get("folder", "")), f"{sid}.json")
         if os.path.exists(p):
             data = json.loads(Path(p).read_text())
@@ -581,7 +603,7 @@ class ChatSessionHandler(APIHandler):
 
     @tornado.web.authenticated
     def delete(self):
-        sid = self.get_argument("id", "")
+        sid = _safe_sid(self.get_argument("id", ""))
         folder = self.get_argument("folder", "")
         p = os.path.join(_chat_dir(folder), f"{sid}.json")
         if os.path.exists(p):

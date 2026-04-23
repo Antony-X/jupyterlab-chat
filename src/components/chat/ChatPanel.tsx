@@ -11,8 +11,10 @@ interface Props {
 
 // Edge handles: thin strips along each side. Corner handles: small squares
 // that overlap the edge strips and take precedence (stacked later in DOM).
+// No 'n' strip: the header IS the top of the panel and owns drag, so a
+// full-width 6px N handle sitting on top of it would steal drag clicks in
+// the top slice. Top-edge resize is still reachable via the NW/NE corners.
 const EDGE_HANDLES: Array<{ edge: ResizeEdge; className: string }> = [
-  { edge: 'n', className: 'top-0 left-0 right-0 h-1.5 cursor-ns-resize' },
   { edge: 's', className: 'bottom-0 left-0 right-0 h-1.5 cursor-ns-resize' },
   { edge: 'w', className: 'top-0 bottom-0 left-0 w-1.5 cursor-ew-resize' },
   { edge: 'e', className: 'top-0 bottom-0 right-0 w-1.5 cursor-ew-resize' },
