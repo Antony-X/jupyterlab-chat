@@ -140,6 +140,8 @@ export function App({ settings, tracker, openSignal }: AppProps) {
               onToggleWebSearch={() => chat.setWebSearch(v => !v)}
               thinking={chat.thinking}
               onToggleThinking={() => chat.setThinking(v => !v)}
+              teach={chat.teach}
+              onToggleTeach={() => chat.setTeach(v => !v)}
               onToggleTheme={toggleTheme}
               onNew={handleNew}
               onToggleSessions={async () => {

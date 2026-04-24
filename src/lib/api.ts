@@ -73,7 +73,8 @@ export async function chatSync(
   model: string,
   s: ServerConnection.ISettings,
   webSearch = false,
-  thinking = false
+  thinking = false,
+  teach = false
 ): Promise<string> {
   const url = URLExt.join(s.baseUrl, 'api/chat/message');
   const r = await ServerConnection.makeRequest(
@@ -87,6 +88,7 @@ export async function chatSync(
           model,
           web_search: webSearch,
           thinking,
+          teach,
         })
       ),
     },
@@ -107,7 +109,8 @@ export async function chatStream(
   webSearch = false,
   thinking = false,
   onReasoning?: (full: string) => void,
-  onUsage?: (u: UsageInfo) => void
+  onUsage?: (u: UsageInfo) => void,
+  teach = false
 ): Promise<{ content: string; reasoning: string; usage?: UsageInfo }> {
   const url = URLExt.join(s.baseUrl, 'api/chat/stream');
   const hdrs: Record<string, string> = {
@@ -127,6 +130,7 @@ export async function chatStream(
         model,
         web_search: webSearch,
         thinking,
+        teach,
       })
     ),
     signal,

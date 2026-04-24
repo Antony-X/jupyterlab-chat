@@ -59,16 +59,19 @@ export function useChat(opts: UseChatOpts) {
   const [selectedModel, setSelectedModel] = useState(opts.initialModel);
   const [webSearch, setWebSearch] = useState(false);
   const [thinking, setThinking] = useState(false);
-  // Refs mirror the latest model / web-search / thinking so that a
+  const [teach, setTeach] = useState(false);
+  // Refs mirror the latest model / web-search / thinking / teach so that a
   // sendMessage closure created on a past render (still running when the
   // user drains the queue or when auto-chain follow-ups fire) picks up the
   // current selection instead of the stale render's value.
   const selectedModelRef = useRef(selectedModel);
   const webSearchRef = useRef(webSearch);
   const thinkingRef = useRef(thinking);
+  const teachRef = useRef(teach);
   useEffect(() => { selectedModelRef.current = selectedModel; }, [selectedModel]);
   useEffect(() => { webSearchRef.current = webSearch; }, [webSearch]);
   useEffect(() => { thinkingRef.current = thinking; }, [thinking]);
+  useEffect(() => { teachRef.current = teach; }, [teach]);
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [sending, setSending] = useState(false);
   // Queue for messages typed while a response is still streaming. We drain
@@ -264,8 +267,33 @@ export function useChat(opts: UseChatOpts) {
    * loop on itself by re-emitting view-image in the follow-up response.
    */
   const sendMessage = useCallback(
-    async (rawText: string, rawAttachments: Attachment[], depth = 0) => {
-      const text = rawText.trim();
+    async (
+      rawText: string,
+      rawAttachments: Attachment[],
+      depth = 0,
+      teachOverride?: boolean
+    ) => {
+      // Slash commands (only at depth 0 — auto-chained sends are synthetic).
+      if (depth === 0) {
+        const trimmed = rawText.trim();
+        if (trimmed === '/teach') {
+          // Bare command toggles the persistent teach toggle and returns.
+          setTeach(v => !v);
+          return;
+        }
+      }
+
+      // /teach <message> — one-shot teach mode; strip the prefix from the
+      // message that actually goes to the model (mode is signaled via the
+      // system prompt, not the user message).
+      let messageText = rawText;
+      let teachFromCommand = false;
+      if (depth === 0 && rawText.trim().startsWith('/teach ')) {
+        messageText = rawText.trim().slice('/teach '.length);
+        teachFromCommand = true;
+      }
+
+      const text = messageText.trim();
       if (!text && !rawAttachments.length) return;
       // Clear the visible input on any accepted user send (queue OR immediate)
       // so a queued submit doesn't leave attachments in the tray that would
@@ -276,11 +304,19 @@ export function useChat(opts: UseChatOpts) {
       // it finishes. depth>0 means this is an internal auto-chained call
       // (view-image follow-up) and must bypass the queue.
       if (sending && depth === 0) {
+        // Queue the ORIGINAL rawText (with /teach prefix intact). On drain
+        // we re-enter sendMessage and re-detect the command, so the teach
+        // flag is recomputed against the latest persistent state.
         queueRef.current.push({ text: rawText, attachments: rawAttachments });
         setQueuedCount(queueRef.current.length);
         return;
       }
       setSending(true);
+
+      const effectiveTeach =
+        teachOverride !== undefined
+          ? teachOverride
+          : teachFromCommand || teachRef.current;
 
       const content = makeContent(text, rawAttachments);
       const displayText = text + (rawAttachments.length ? ` [${rawAttachments.length} file(s)]` : '');
@@ -326,7 +362,8 @@ export function useChat(opts: UseChatOpts) {
           },
           u => {
             fullUsage = u;
-          }
+          },
+          effectiveTeach
         );
         fullText = res.content;
         fullReasoning = res.reasoning;
@@ -535,7 +572,12 @@ export function useChat(opts: UseChatOpts) {
             segments.push(`Full output${outputBlocks.length > 1 ? 's' : ''} for cell ${seenOutputCells.join(', ')}:\n\n${outputBlocks.join('\n\n')}`);
           }
           segments.push('Continue.');
-          await sendMessage(`${AUTO_PREFIX}${segments.join('\n\n')}`, atts, depth + 1);
+          await sendMessage(
+            `${AUTO_PREFIX}${segments.join('\n\n')}`,
+            atts,
+            depth + 1,
+            effectiveTeach
+          );
         } else {
           addStatus('⚠ view request: no matching output found');
         }
@@ -546,7 +588,8 @@ export function useChat(opts: UseChatOpts) {
         await sendMessage(
           `${AUTO_PREFIX}Notebook state updated. Review outputs and decide: continue with more actions, or reply without any action fences to stop.`,
           [],
-          depth + 1
+          depth + 1,
+          effectiveTeach
         );
       }
 
@@ -624,6 +667,8 @@ export function useChat(opts: UseChatOpts) {
     setWebSearch,
     thinking,
     setThinking,
+    teach,
+    setTeach,
     attachments,
     setAttachments,
     sending,

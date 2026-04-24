@@ -1,5 +1,15 @@
 import * as React from 'react';
-import { Plus, History, Moon, Sun, MoreVertical, X, Globe, Brain } from 'lucide-react';
+import {
+  Plus,
+  History,
+  Moon,
+  Sun,
+  MoreVertical,
+  X,
+  Globe,
+  Brain,
+  GraduationCap,
+} from 'lucide-react';
 import { NativeSelect } from '../ui/select';
 import { Button } from '../ui/button';
 import { MODELS } from '../../constants';
@@ -13,6 +23,8 @@ interface Props {
   onToggleWebSearch: () => void;
   thinking: boolean;
   onToggleThinking: () => void;
+  teach: boolean;
+  onToggleTeach: () => void;
   onToggleTheme: () => void;
   onNew: () => void;
   onToggleSessions: () => void;
@@ -29,6 +41,8 @@ export function ChatHeader({
   onToggleWebSearch,
   thinking,
   onToggleThinking,
+  teach,
+  onToggleTeach,
   onToggleTheme,
   onNew,
   onToggleSessions,
@@ -59,6 +73,19 @@ export function ChatHeader({
       <div className="font-serif font-semibold tracking-tight text-sm ml-1 flex-1 truncate">
         Chat
       </div>
+      <Button
+        variant="header-icon"
+        size="icon"
+        onClick={onToggleTeach}
+        title={
+          teach
+            ? 'Teach mode: on (tutor, not code-writer) · /teach <msg> for one-shot'
+            : 'Teach mode: off · /teach to toggle, /teach <msg> for one-shot'
+        }
+        className={cn(teach && 'text-brand bg-white/10')}
+      >
+        <GraduationCap size={14} />
+      </Button>
       <Button
         variant="header-icon"
         size="icon"

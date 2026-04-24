@@ -183,6 +183,23 @@ Reproducibility: if setting seeds, use `seed = 2026` and seed `random`, `os.envi
 Prefer vectorized ops over Python loops: `einsum`, `scatter_add_`, `gather`, `torch.cdist`, `torch.bucketize`.
 """
 
+TEACH_ADDENDUM = """
+
+## TEACH MODE (enabled)
+The user has turned on teach mode. You are a patient coding tutor, not a code-writer. Follow these rules STRICTLY:
+
+1. Do NOT emit `python-run`, `python-edit`, `python-insert-*`, or `python-delete` fences unless the user EXPLICITLY asks — phrases like "write it for me", "show me the code", "just give me the snippet", "run it" are the only green light. The user is learning and will write the code themselves.
+2. Teach CONCEPTS at a general, transferable level — patterns, mental models, tradeoffs, failure modes. Frame what you teach so it applies beyond the immediate problem.
+3. Explain WHY before HOW. Start with the intuition or the problem the technique solves, then the mechanism, then optionally the syntax.
+4. Illustrative snippets are fine in ```python DISPLAY fences (1–3 lines, never executed). Keep them tiny. Depth over breadth — one idea explained well beats a bullet list of ten.
+5. When the user shares code they wrote and asks for review: give concrete feedback on what's non-idiomatic, inefficient, or fragile, WITH the reasoning. Name the transferable pattern so they can spot the same issue elsewhere.
+6. If code would genuinely help, ASK before producing it: "Want me to show a skeleton?" Let the user choose.
+
+Forbidden openers in this mode: "Here's the code…", "Let me write that for you…", "I'll implement…". They all assume the user wanted code; check their intent first.
+
+If the user says "write it for me" or turns teach mode off, revert to the default behavior in the main system prompt (emit action fences freely).
+"""
+
 CHAT_DIR = ".jupyter-chat"
 
 
@@ -534,6 +551,7 @@ class ChatHandler(APIHandler):
         web_search = bool(body.get("web_search", False))
         model = _apply_web_search(model, web_search)
         reasoning = _reasoning_param(body.get("thinking", False))
+        teach = bool(body.get("teach", False))
 
         hist = ChatState.history(client_id)
         hist.append({"role": "user", "content": content})
@@ -542,9 +560,11 @@ class ChatHandler(APIHandler):
             self.set_status(400)
             return self.finish(json.dumps({"error": "No OPENROUTER_API_KEY"}))
 
-        sys = SYSTEM_PROMPT + (
-            f"{_SYSTEM_NOTEBOOK_MARKER}{ctx}" if ctx else ""
-        )
+        sys = SYSTEM_PROMPT
+        if teach:
+            sys += TEACH_ADDENDUM
+        if ctx:
+            sys += f"{_SYSTEM_NOTEBOOK_MARKER}{ctx}"
         msgs = [{"role": "system", "content": sys}] + _strip_reasoning(
             _trim_for_request(hist)
         )
@@ -604,6 +624,7 @@ class ChatStreamHandler(APIHandler):
         web_search = bool(body.get("web_search", False))
         model = _apply_web_search(model, web_search)
         reasoning = _reasoning_param(body.get("thinking", False))
+        teach = bool(body.get("teach", False))
 
         hist = ChatState.history(client_id)
         hist.append({"role": "user", "content": content})
@@ -612,9 +633,11 @@ class ChatStreamHandler(APIHandler):
             self.set_status(400)
             return self.finish(json.dumps({"error": "No OPENROUTER_API_KEY"}))
 
-        sys_msg = SYSTEM_PROMPT + (
-            f"{_SYSTEM_NOTEBOOK_MARKER}{ctx}" if ctx else ""
-        )
+        sys_msg = SYSTEM_PROMPT
+        if teach:
+            sys_msg += TEACH_ADDENDUM
+        if ctx:
+            sys_msg += f"{_SYSTEM_NOTEBOOK_MARKER}{ctx}"
         msgs = [{"role": "system", "content": sys_msg}] + _strip_reasoning(
             _trim_for_request(hist)
         )
