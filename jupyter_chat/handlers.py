@@ -322,6 +322,11 @@ class ChatState:
     # the key, and when we exceed MAX_CLIENTS we pop the oldest entry. Keeps
     # the process from slowly leaking memory as tabs / refreshes pile up.
     _histories: "OrderedDict[str, list]" = OrderedDict()
+    # Last notebook context sent per client. We compare this turn's ctx to
+    # the previous one to decide whether to move the cache breakpoint past
+    # the notebook block. Byte-for-byte equality is the right check — any
+    # change (run, edit, focus) alters the block, invalidating the cache.
+    _last_contexts: dict[str, str] = {}
     _key: str | None = None
 
     @classmethod
@@ -343,6 +348,21 @@ class ChatState:
         cls._histories.move_to_end(cid)
         while len(cls._histories) > MAX_CLIENTS:
             cls._histories.popitem(last=False)
+
+    @classmethod
+    def last_context(cls, cid: str) -> str:
+        return cls._last_contexts.get(cid or "default", "")
+
+    @classmethod
+    def set_last_context(cls, cid: str, ctx: str) -> None:
+        cid = cid or "default"
+        cls._last_contexts[cid] = ctx
+        # Prune entries whose history was already evicted from the LRU so
+        # this dict can't grow indefinitely either.
+        if len(cls._last_contexts) > MAX_CLIENTS * 2:
+            for k in list(cls._last_contexts):
+                if k not in cls._histories and k != "default":
+                    del cls._last_contexts[k]
 
     @classmethod
     def api_key(cls) -> str:
@@ -421,75 +441,84 @@ def _strip_reasoning(msgs: list) -> list:
 _SYSTEM_NOTEBOOK_MARKER = "\n\nCurrent notebook:\n"
 
 
-def _mark_anthropic_cache(msgs: list, model: str) -> list:
-    """Add Anthropic `cache_control` markers on stable prefixes.
+def _mark_cache(msgs: list, model: str, ctx_unchanged: bool = False) -> list:
+    """Apply provider-specific prompt-caching hints.
 
-    Why this exists: Anthropic does NOT auto-cache — without markers, every
-    turn re-computes attention over the full system prompt and history.
-    OpenAI and DeepSeek do prefix caching implicitly, so for those we just
-    pass the plain OpenAI-style messages through. OpenRouter forwards our
-    markers to Anthropic and the cached prefix reads at ~10% of base input
-    cost (5-minute TTL by default).
+    Anthropic: set explicit `cache_control: ephemeral` breakpoints.
+      1. End of SYSTEM_PROMPT (always — static forever).
+      2. End of notebook context — ONLY when `ctx_unchanged` is true, i.e.
+         the caller has verified this turn's ctx is byte-identical to last
+         turn's. Promotes the notebook into the cached region so we hit
+         cache on the whole system message instead of re-paying per turn.
+      3. End of the most recent assistant turn — caches the conversation
+         tail so each new turn pays full price only on the newest user
+         message and the reply.
 
-    Breakpoints we set (Anthropic allows up to 4):
-      1. End of the static SYSTEM_PROMPT. The dynamic "Current notebook:"
-         block sits AFTER the marker, so live notebook state stays out of
-         the cache and changes freely.
-      2. End of the most recent assistant turn — caches the whole tail so
-         the next turn only pays full price on the newest user + reply.
+    Gemini: split the system message into static + dynamic blocks (no
+    markers — Gemini ignores cache_control through OpenRouter). Google's
+    implicit caching on 2.5+ kicks in only above ~32K token prefixes and
+    is block-aware; exposing the boundary lets the static portion match
+    even when the notebook block changes. Below threshold this is a no-op,
+    above threshold it saves real money on Flash/Pro.
+
+    OpenAI, DeepSeek, Grok: pass through unchanged. They do implicit
+    byte-level prefix caching automatically.
     """
-    if not model.startswith("anthropic/"):
+    if not msgs:
+        return msgs
+
+    is_anthropic = model.startswith("anthropic/")
+    is_gemini = model.startswith("google/")
+    if not (is_anthropic or is_gemini):
         return msgs
 
     out = [dict(m) for m in msgs]
 
-    if out and out[0].get("role") == "system":
+    # Rewrite the system message as content blocks so the static/dynamic
+    # boundary is visible to the provider. Anthropic gets cache_control too.
+    if out[0].get("role") == "system":
         c = out[0].get("content", "")
         if isinstance(c, str) and c:
             idx = c.find(_SYSTEM_NOTEBOOK_MARKER)
             if idx > 0:
-                blocks = [
-                    {
-                        "type": "text",
-                        "text": c[:idx],
-                        "cache_control": {"type": "ephemeral"},
-                    },
-                    {"type": "text", "text": c[idx:]},
-                ]
+                static_block: dict = {"type": "text", "text": c[:idx]}
+                dynamic_block: dict = {"type": "text", "text": c[idx:]}
+                if is_anthropic:
+                    static_block["cache_control"] = {"type": "ephemeral"}
+                    if ctx_unchanged:
+                        dynamic_block["cache_control"] = {"type": "ephemeral"}
+                out[0]["content"] = [static_block, dynamic_block]
             else:
-                blocks = [
+                block: dict = {"type": "text", "text": c}
+                if is_anthropic:
+                    block["cache_control"] = {"type": "ephemeral"}
+                out[0]["content"] = [block]
+
+    # Anthropic-only: cache the conversation tail through the latest reply.
+    if is_anthropic:
+        last_asst_idx = -1
+        for i in range(len(out) - 1, -1, -1):
+            if out[i].get("role") == "assistant":
+                last_asst_idx = i
+                break
+        if last_asst_idx >= 0:
+            m = out[last_asst_idx]
+            c = m.get("content", "")
+            if isinstance(c, str) and c:
+                m["content"] = [
                     {
                         "type": "text",
                         "text": c,
                         "cache_control": {"type": "ephemeral"},
                     }
                 ]
-            out[0]["content"] = blocks
-
-    last_asst_idx = -1
-    for i in range(len(out) - 1, -1, -1):
-        if out[i].get("role") == "assistant":
-            last_asst_idx = i
-            break
-
-    if last_asst_idx >= 0:
-        m = out[last_asst_idx]
-        c = m.get("content", "")
-        if isinstance(c, str) and c:
-            m["content"] = [
-                {
-                    "type": "text",
-                    "text": c,
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ]
-        elif isinstance(c, list) and c:
-            new_blocks = [dict(b) for b in c]
-            for b in reversed(new_blocks):
-                if b.get("type") == "text":
-                    b["cache_control"] = {"type": "ephemeral"}
-                    break
-            m["content"] = new_blocks
+            elif isinstance(c, list) and c:
+                new_blocks = [dict(b) for b in c]
+                for b in reversed(new_blocks):
+                    if b.get("type") == "text":
+                        b["cache_control"] = {"type": "ephemeral"}
+                        break
+                m["content"] = new_blocks
 
     return out
 
@@ -519,7 +548,10 @@ class ChatHandler(APIHandler):
         msgs = [{"role": "system", "content": sys}] + _strip_reasoning(
             _trim_for_request(hist)
         )
-        msgs = _mark_anthropic_cache(msgs, model)
+        last_ctx = ChatState.last_context(client_id)
+        ctx_unchanged = bool(ctx) and ctx == last_ctx
+        ChatState.set_last_context(client_id, ctx)
+        msgs = _mark_cache(msgs, model, ctx_unchanged)
         req_body: dict = {"model": model, "messages": msgs}
         if reasoning:
             req_body["reasoning"] = reasoning
@@ -586,7 +618,10 @@ class ChatStreamHandler(APIHandler):
         msgs = [{"role": "system", "content": sys_msg}] + _strip_reasoning(
             _trim_for_request(hist)
         )
-        msgs = _mark_anthropic_cache(msgs, model)
+        last_ctx = ChatState.last_context(client_id)
+        ctx_unchanged = bool(ctx) and ctx == last_ctx
+        ChatState.set_last_context(client_id, ctx)
+        msgs = _mark_cache(msgs, model, ctx_unchanged)
 
         self.set_header("Content-Type", "text/event-stream")
         self.set_header("Cache-Control", "no-cache")
