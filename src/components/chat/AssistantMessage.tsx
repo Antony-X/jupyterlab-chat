@@ -20,10 +20,21 @@ function cleanAssistantText(text: string): string {
   return text.replace(SIDE_CHANNEL_FENCE, '').trimEnd();
 }
 
+function cachedReadTokens(u: UsageInfo): number {
+  // Anthropic uses a dedicated field; OpenAI nests it under prompt_tokens_details.
+  return (
+    u.cache_read_input_tokens ??
+    u.prompt_tokens_details?.cached_tokens ??
+    0
+  );
+}
+
 function formatUsage(u: UsageInfo): string {
   const bits: string[] = [];
   if (typeof u.prompt_tokens === 'number') bits.push(`${u.prompt_tokens} in`);
   if (typeof u.completion_tokens === 'number') bits.push(`${u.completion_tokens} out`);
+  const cached = cachedReadTokens(u);
+  if (cached > 0) bits.push(`${cached} cached`);
   if (typeof u.cost === 'number' && u.cost > 0) {
     // OpenRouter reports cost in USD. Show 4 decimals for sub-cent precision.
     bits.push(`$${u.cost.toFixed(4)}`);

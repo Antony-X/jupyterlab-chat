@@ -50,6 +50,14 @@ export interface UsageInfo {
   // Dollar cost reported by OpenRouter for providers that expose it.
   // Undefined when the provider didn't supply it — fall back to token counts.
   cost?: number;
+  // Anthropic prompt-caching breakdown: tokens billed for writing vs reading
+  // the KV cache. Present only when we sent cache_control markers AND the
+  // provider forwarded the counters back (Anthropic via OpenRouter).
+  cache_creation_input_tokens?: number;
+  cache_read_input_tokens?: number;
+  // OpenAI-style nested details (seen on both OpenAI and some OpenRouter
+  // responses) — surfaces the cached prefix as `cached_tokens`.
+  prompt_tokens_details?: { cached_tokens?: number };
 }
 
 export interface ChatMessage {

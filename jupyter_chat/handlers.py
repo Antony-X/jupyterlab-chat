@@ -415,6 +415,85 @@ def _strip_reasoning(msgs: list) -> list:
     return out
 
 
+# Where the system message splits between the static instructions (safe to
+# cache across turns) and the per-turn notebook snapshot. The main request
+# builders both use this exact string when they concatenate the two.
+_SYSTEM_NOTEBOOK_MARKER = "\n\nCurrent notebook:\n"
+
+
+def _mark_anthropic_cache(msgs: list, model: str) -> list:
+    """Add Anthropic `cache_control` markers on stable prefixes.
+
+    Why this exists: Anthropic does NOT auto-cache — without markers, every
+    turn re-computes attention over the full system prompt and history.
+    OpenAI and DeepSeek do prefix caching implicitly, so for those we just
+    pass the plain OpenAI-style messages through. OpenRouter forwards our
+    markers to Anthropic and the cached prefix reads at ~10% of base input
+    cost (5-minute TTL by default).
+
+    Breakpoints we set (Anthropic allows up to 4):
+      1. End of the static SYSTEM_PROMPT. The dynamic "Current notebook:"
+         block sits AFTER the marker, so live notebook state stays out of
+         the cache and changes freely.
+      2. End of the most recent assistant turn — caches the whole tail so
+         the next turn only pays full price on the newest user + reply.
+    """
+    if not model.startswith("anthropic/"):
+        return msgs
+
+    out = [dict(m) for m in msgs]
+
+    if out and out[0].get("role") == "system":
+        c = out[0].get("content", "")
+        if isinstance(c, str) and c:
+            idx = c.find(_SYSTEM_NOTEBOOK_MARKER)
+            if idx > 0:
+                blocks = [
+                    {
+                        "type": "text",
+                        "text": c[:idx],
+                        "cache_control": {"type": "ephemeral"},
+                    },
+                    {"type": "text", "text": c[idx:]},
+                ]
+            else:
+                blocks = [
+                    {
+                        "type": "text",
+                        "text": c,
+                        "cache_control": {"type": "ephemeral"},
+                    }
+                ]
+            out[0]["content"] = blocks
+
+    last_asst_idx = -1
+    for i in range(len(out) - 1, -1, -1):
+        if out[i].get("role") == "assistant":
+            last_asst_idx = i
+            break
+
+    if last_asst_idx >= 0:
+        m = out[last_asst_idx]
+        c = m.get("content", "")
+        if isinstance(c, str) and c:
+            m["content"] = [
+                {
+                    "type": "text",
+                    "text": c,
+                    "cache_control": {"type": "ephemeral"},
+                }
+            ]
+        elif isinstance(c, list) and c:
+            new_blocks = [dict(b) for b in c]
+            for b in reversed(new_blocks):
+                if b.get("type") == "text":
+                    b["cache_control"] = {"type": "ephemeral"}
+                    break
+            m["content"] = new_blocks
+
+    return out
+
+
 class ChatHandler(APIHandler):
     @tornado.web.authenticated
     async def post(self):
@@ -434,10 +513,13 @@ class ChatHandler(APIHandler):
             self.set_status(400)
             return self.finish(json.dumps({"error": "No OPENROUTER_API_KEY"}))
 
-        sys = SYSTEM_PROMPT + (f"\n\nCurrent notebook:\n{ctx}" if ctx else "")
+        sys = SYSTEM_PROMPT + (
+            f"{_SYSTEM_NOTEBOOK_MARKER}{ctx}" if ctx else ""
+        )
         msgs = [{"role": "system", "content": sys}] + _strip_reasoning(
             _trim_for_request(hist)
         )
+        msgs = _mark_anthropic_cache(msgs, model)
         req_body: dict = {"model": model, "messages": msgs}
         if reasoning:
             req_body["reasoning"] = reasoning
@@ -498,10 +580,13 @@ class ChatStreamHandler(APIHandler):
             self.set_status(400)
             return self.finish(json.dumps({"error": "No OPENROUTER_API_KEY"}))
 
-        sys_msg = SYSTEM_PROMPT + (f"\n\nCurrent notebook:\n{ctx}" if ctx else "")
+        sys_msg = SYSTEM_PROMPT + (
+            f"{_SYSTEM_NOTEBOOK_MARKER}{ctx}" if ctx else ""
+        )
         msgs = [{"role": "system", "content": sys_msg}] + _strip_reasoning(
             _trim_for_request(hist)
         )
+        msgs = _mark_anthropic_cache(msgs, model)
 
         self.set_header("Content-Type", "text/event-stream")
         self.set_header("Cache-Control", "no-cache")
