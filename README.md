@@ -2,7 +2,7 @@
 
 A floating chat panel for **JupyterLab 4** that lets you talk to LLMs (via [OpenRouter](https://openrouter.ai)) while giving the assistant **direct read/write access to your active notebook** — it can run, edit, insert, and delete cells by emitting a handful of special fenced code blocks.
 
-Pick from 12 models (Claude Opus 4.7, GPT-5.5, GPT-5.4 Pro, Grok 4.20, DeepSeek V4, Gemini 3.1 Pro, and more), see live thinking traces when you want them, queue messages while streaming, and keep every chat session saved per notebook folder.
+Pick from 13 models (Claude Opus 4.7, GPT-5.4 Pro, Grok 4.20, DeepSeek V4 Pro/Flash, GPT-5.3 Codex, Gemini 3.1 Pro, and more), see live thinking traces when you want them, queue messages while streaming, and keep every chat session saved per notebook folder.
 
 ---
 
