@@ -4,8 +4,10 @@
 export const MODELS = [
   // ── Top tier — deep reasoning, agent planning, hard coding ──
   { id: 'anthropic/claude-opus-4.7', label: 'Claude Opus 4.7' },
+  { id: 'openai/gpt-5.5', label: 'GPT-5.5' },
   { id: 'openai/gpt-5.4-pro', label: 'GPT-5.4 Pro' },
   { id: 'x-ai/grok-4.20', label: 'Grok 4.20' },
+  { id: 'deepseek/deepseek-v4', label: 'DeepSeek V4' },
 
   // ── Mid tier — balanced daily driver ──
   { id: 'anthropic/claude-sonnet-4.6', label: 'Claude Sonnet 4.6' },
