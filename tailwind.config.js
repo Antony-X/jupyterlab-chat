@@ -66,7 +66,7 @@ module.exports = {
         'pop-in': 'pop-in .32s cubic-bezier(.2,.9,.25,1.15)',
         'pop-out': 'pop-out .26s cubic-bezier(.45,0,.6,.4) forwards',
         'fade-in': 'fade-in .25s cubic-bezier(.2,.8,.2,1)',
-        'jc-pulse': 'jc-pulse 1.6s ease-in-out infinite',
+        'jc-pulse': 'jc-pulse 1.4s ease-in-out 1',
       },
     },
   },

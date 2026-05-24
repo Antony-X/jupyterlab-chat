@@ -19,6 +19,7 @@ export const MODELS = [
   { id: 'openai/gpt-5.4-nano', label: 'GPT-5.4 Nano' },
   { id: 'deepseek/deepseek-v4-flash', label: 'DeepSeek V4 Flash' },
   { id: 'google/gemini-3.1-flash-lite-preview', label: 'Gemini 3.1 Flash Lite' },
+  { id: 'google/gemma-3-27b-it', label: 'Gemma 3 27B' },
   { id: 'x-ai/grok-4.1-fast', label: 'Grok 4.1 Fast' },
 ];
 
